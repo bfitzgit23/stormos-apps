@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
 
 from bs4 import BeautifulSoup  # Import BeautifulSoup for HTML parsing
+from PyQt5.QtGui import QKeyEvent
 
 
 class StormyPage(QWebEnginePage):
@@ -128,6 +129,9 @@ class StormyBrowser(QMainWindow):
 
         self.address_bar = QLineEdit()
         self.address_bar.returnPressed.connect(self.load_url)
+
+        # Add an event filter to the address bar to capture key events
+        self.address_bar.installEventFilter(self)
 
         # Create a toolbar to hold the navigation buttons, address bar, and additional buttons
         self.back_button.clicked.connect(self.navigate_back)
@@ -427,6 +431,33 @@ class StormyBrowser(QMainWindow):
             print(f"Bookmarks file not found for {browser_name}.")
         except Exception as e:
             print(f"Error importing bookmarks from {browser_name}: {e}")
+
+    def eventFilter(self, obj, event):
+        if obj == self.address_bar and event.type() == QKeyEvent.KeyPress:
+            if event.key() == Qt.Key_Return and event.modifiers() == Qt.ControlModifier:
+                # Ctrl+Enter is pressed, modify the URL
+                self.modify_url()
+                return True  # Event handled
+
+        return super().eventFilter(obj, event)
+
+
+    def modify_url(self):
+        current_url = self.address_bar.text()
+        if not current_url.startswith("http://") and not current_url.startswith("https://"):
+            if ' ' in current_url:
+                search_query = current_url.replace(' ', '+')
+                current_url = f"https://duckduckgo.com/?q={search_query}"
+            else:
+                # Check if the entered text is not a valid URL (does not contain a dot)
+                if '.' not in current_url:
+                    current_url = f"www.{current_url}.com"
+                else:
+                    current_url = "https://" + current_url
+
+        self.address_bar.setText(current_url)
+
+
 
 
 
