@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+import sys
+import subprocess
+import re
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QListWidget, QMenu, QAction, QListWidgetItem
+from PyQt5.QtGui import QClipboard
+
+def is_chrome_installed() -> bool:
+    try:
+        subprocess.check_output(["google-chrome-stable", "--version"])
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+def is_chromium_installed() -> bool:
+    try:
+        subprocess.check_output(["chromium", "--version"])
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+def get_bookmarks() -> list:
+    """
+    Retrieve the Chrome and Chromium bookmarks and extract the bookmark names and URLs using jq.
+    Returns a list of tuples, where each tuple contains the name and URL of a bookmark.
+    """
+    bookmarks = []
+
+    if is_chrome_installed():
+        chrome_bookmarks_file = (
+            subprocess.check_output(["bash", "-c", "echo $HOME"]).decode().strip()
+            + "/.config/google-chrome/Default/Bookmarks"
+        )
+        chrome_bookmarks_data = subprocess.check_output(
+            [
+                "jq",
+                '-r',
+                '.. | objects | select(.type?=="url") | "\(.name)@@\(.url)"',
+                chrome_bookmarks_file,
+            ]
+        ).decode().strip()
+        chrome_bookmarks = [bookmark.split("@@") for bookmark in chrome_bookmarks_data.split("\n")]
+        bookmarks.extend(chrome_bookmarks)
+
+    if is_chromium_installed():
+        chromium_bookmarks_file = (
+            subprocess.check_output(["bash", "-c", "echo $HOME"]).decode().strip()
+            + "/.config/chromium/Default/Bookmarks"
+        )
+        chromium_bookmarks_data = subprocess.check_output(
+            [
+                "jq",
+                '-r',
+                '.. | objects | select(.type?=="url") | "\(.name)@@\(.url)"',
+                chromium_bookmarks_file,
+            ]
+        ).decode().strip()
+        chromium_bookmarks = [bookmark.split("@@") for bookmark in chromium_bookmarks_data.split("\n")]
+        bookmarks.extend(chromium_bookmarks)
+
+    return bookmarks
+
+class CustomListWidget(QListWidget):
+    def __init__(self):
+        super().__init__()
+
+    def contextMenuEvent(self, event):
+        item = self.itemAt(event.pos())
+        if item is not None:
+            menu = QMenu(self)
+            copy_action = QAction("Copy URL", self)
+            copy_action.triggered.connect(lambda: self.copy_url(item))
+            menu.addAction(copy_action)
+            menu.exec_(event.globalPos())
+
+    def copy_url(self, item):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(item.url)
+
+class BookmarkSearch(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("StormOS Bookmark Searcher")
+        self.setGeometry(100, 100, 800, 600)
+
+        central_widget = QWidget(self)
+        self.setCentralWidget(central_widget)
+
+        layout = QVBoxLayout(central_widget)
+
+        search_layout = QHBoxLayout()
+        self.entry = QLineEdit()
+        self.entry.textChanged.connect(self.on_search)  # Call on_search on text change
+        search_button = QPushButton("Search")
+        search_button.clicked.connect(self.on_search)
+        search_layout.addWidget(self.entry)
+        search_layout.addWidget(search_button)
+
+        layout.addLayout(search_layout)
+
+        self.bookmark_list = CustomListWidget()  # Use CustomListWidget
+        layout.addWidget(self.bookmark_list)
+
+        self.bookmark_list.itemDoubleClicked.connect(self.launch_browser_tab)
+
+    def on_search(self):
+        search_term = self.entry.text().lower()
+        self.update_bookmark_list(search_term)
+
+    def update_bookmark_list(self, search_term):
+        self.bookmark_list.clear()
+        bookmarks = get_bookmarks()
+        for bookmark in bookmarks:
+            name, url = bookmark[0], bookmark[1]
+            # Use regular expressions for flexible matching
+            if re.search(re.escape(search_term), name, re.IGNORECASE) or re.search(re.escape(search_term), url, re.IGNORECASE):
+                item = QListWidgetItem(f"{name} - {url}")
+                item.url = url
+                self.bookmark_list.addItem(item)
+
+    def launch_browser_tab(self, item):
+        url = item.url
+        if is_chrome_installed():
+            subprocess.Popen(["google-chrome-stable", "--new-tab", url])
+        elif is_chromium_installed():
+            subprocess.Popen(["chromium", "--new-tab", url])
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = BookmarkSearch()
+    window.show()
+    sys.exit(app.exec_())

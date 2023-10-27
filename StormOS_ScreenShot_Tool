@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import subprocess
+import datetime
+import time
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QCheckBox, QSystemTrayIcon, QAction, QMenu
+from PyQt5.QtGui import QIcon
+
+class ScrotApp(QMainWindow):
+    def __init__(self, show_main_window=True):
+        super().__init__()
+
+        self.copy_to_clipboard = False  # Flag to track clipboard copying
+
+        # Directory to save the pictures
+        self.pictures_dir = os.path.expanduser("~") + "/Pictures"
+        if not os.path.exists(self.pictures_dir):
+            os.makedirs(self.pictures_dir)
+
+        self.tray_menu = None  # Initialize tray_menu
+
+        if not show_main_window:
+            self.initUI()
+            self.hide_main_window()
+        else:
+            self.initUI()
+            self.show_main_window()
+
+    def initUI(self):
+        self.setWindowTitle('StormOS Screenshot Tool')
+
+        # Create a system tray icon
+        self.tray_icon = QSystemTrayIcon(QIcon.fromTheme("camera-photo"), self)  # Use a system camera icon
+        self.tray_menu = QMenu()
+        self.show_action = QAction('Show', self)
+        self.show_action.triggered.connect(self.show_main_window)
+        self.tray_menu.addAction(self.show_action)
+        self.quit_action = QAction('Quit', self)
+        self.quit_action.triggered.connect(self.quit_program)
+        self.tray_menu.addAction(self.quit_action)
+        self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+        self.tray_icon.show()
+
+        # Main widget and layout
+        widget = QWidget(self)
+        layout = QVBoxLayout()
+
+        # Capture Full Screen Button
+        btn_capture_full = QPushButton('Capture Full Screen', self)
+        btn_capture_full.clicked.connect(self.capture_full_screen)
+        layout.addWidget(btn_capture_full)
+
+        # Capture Current Window Button
+        btn_capture_window = QPushButton('Capture Current Window', self)
+        btn_capture_window.clicked.connect(self.capture_current_window)
+        layout.addWidget(btn_capture_window)
+
+        # Capture Selected Area Button
+        btn_capture_area = QPushButton('Capture Selected Area', self)
+        btn_capture_area.clicked.connect(self.capture_selected_area)
+        layout.addWidget(btn_capture_area)
+
+        # Checkbox to enable/disable clipboard copying
+        self.copy_to_clipboard_checkbox = QCheckBox('Copy to Clipboard Only', self)
+        self.copy_to_clipboard_checkbox.stateChanged.connect(self.checkbox_state_changed)
+        layout.addWidget(self.copy_to_clipboard_checkbox)
+
+        # Checkbox to enable/disable saving to file
+        self.save_to_file_checkbox = QCheckBox('Save to File Only', self)
+        layout.addWidget(self.save_to_file_checkbox)
+        self.save_to_file_checkbox.setChecked(True)  # Default to saving files
+
+        widget.setLayout(layout)
+        self.setCentralWidget(widget)
+
+    def hide_main_window(self):
+        self.hide()
+
+    def show_main_window(self):
+        self.show()
+
+    def generate_unique_filename(self, prefix="screenshot"):
+        """Generate a unique filename using the current timestamp."""
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"{prefix}_{timestamp}.png"
+
+    def checkbox_state_changed(self, state):
+        if state == 2:  # 2 corresponds to Checked state
+            self.copy_to_clipboard = True
+        else:
+            self.copy_to_clipboard = False
+
+    def capture_screenshot(self, scrot_args, filename_prefix):
+        # Determine whether to use a temporary file (if only copying to clipboard)
+        use_temp_file = self.copy_to_clipboard and not self.save_to_file_checkbox.isChecked()
+        
+        save_path = os.path.join(self.pictures_dir, self.generate_unique_filename(filename_prefix)) if not use_temp_file else "/tmp/temp_screenshot.png"
+        
+        # Hide the main window
+        self.hide()
+
+        # Delay for a while to ensure the window is hidden
+        time.sleep(1.5)
+
+        # Capture screenshot
+        if self.save_to_file_checkbox.isChecked() or use_temp_file:
+            subprocess.run(["scrot", *scrot_args, save_path])
+
+        # Copy to clipboard if the checkbox is checked
+        if self.copy_to_clipboard:
+            subprocess.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-i", save_path])
+            if use_temp_file:
+                os.remove(save_path)  # remove the temporary file
+
+    def capture_full_screen(self):
+        self.capture_screenshot([], "fullscreen")
+
+    def capture_current_window(self):
+        self.capture_screenshot(["-u", "-b"], "current_window")
+
+    def capture_selected_area(self):
+        self.capture_screenshot(["-s"], "selected_area")
+
+    def tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            if self.isHidden():
+                self.show_main_window()
+            else:
+                self.hide_main_window()
+
+    def closeEvent(self, event):
+        event.ignore()  # Ignore the default close event
+        self.hide_main_window()  # Hide the main window to the system tray
+
+    def quit_program(self):
+        self.tray_icon.hide()  # Hide the system tray icon
+        qApp = QApplication.instance()
+        qApp.quit()  # Quit the application
+
+def main():
+    app = QApplication(sys.argv)
+    
+    if "--tray" in sys.argv:
+        ex = ScrotApp(show_main_window=False)  # Pass show_main_window=False
+    else:
+        ex = ScrotApp(show_main_window=True)  # Pass show_main_window=True
+    
+    sys.exit(app.exec_())
+
+if __name__ == '__main__':
+    main()

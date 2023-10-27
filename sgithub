@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import requests
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QLineEdit, QPushButton, QTextBrowser, QVBoxLayout, QWidget, QInputDialog, QFileDialog, QMessageBox, QComboBox
+from PyQt5.QtCore import Qt
+
+class GitHubRepoManager(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle('StormOS GitHub Repo Manager')
+        self.setGeometry(100, 100, 600, 400)
+
+        # Create central widget and layout
+        central_widget = QWidget(self)
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+
+        # Add username label and input field
+        self.username_label = QLabel('GitHub Username:')
+        self.username_input = QLineEdit(self)
+        layout.addWidget(self.username_label)
+        layout.addWidget(self.username_input)
+
+        # Add Personal Access Token (PAT) input field
+        self.token_label = QLabel('Personal Access Token:')
+        self.token_input = QLineEdit(self)
+        layout.addWidget(self.token_label)
+        layout.addWidget(self.token_input)
+
+        # Add fetch button for repositories
+        fetch_repos_button = QPushButton('Fetch Repositories', self)
+        fetch_repos_button.clicked.connect(self.fetch_repositories)
+        layout.addWidget(fetch_repos_button)
+
+        # Add a combo box to select a repository
+        self.repo_combo_box = QComboBox(self)
+        layout.addWidget(self.repo_combo_box)
+
+        # Add text browser to display repository details
+        self.repo_details_browser = QTextBrowser(self)
+        layout.addWidget(self.repo_details_browser)
+
+        # Add buttons for other actions
+        create_repo_button = QPushButton('Create Repository', self)
+        create_repo_button.clicked.connect(self.create_repository)
+        clone_repo_button = QPushButton('Clone Repository', self)
+        clone_repo_button.clicked.connect(self.clone_repository)
+        delete_repo_button = QPushButton('Delete Repository', self)
+        delete_repo_button.clicked.connect(self.delete_repository)
+
+        # Add a button to fetch and display repository contents
+        view_contents_button = QPushButton('View Repository Contents', self)
+        view_contents_button.clicked.connect(self.view_repository_contents)
+        
+        # Add a button to commit and push changes
+        commit_push_button = QPushButton('Commit and Push', self)
+        commit_push_button.clicked.connect(self.commit_and_push_changes)
+        
+        layout.addWidget(view_contents_button)
+        layout.addWidget(create_repo_button)
+        layout.addWidget(clone_repo_button)
+        layout.addWidget(delete_repo_button)
+        layout.addWidget(commit_push_button)
+
+    def fetch_repositories(self):
+        username = self.username_input.text()
+        token = self.token_input.text()
+
+        if not username or not token:
+            QMessageBox.warning(self, "Warning", "Please enter your GitHub username and Personal Access Token (PAT).")
+            return
+
+        # Create a session and authenticate with GitHub using the token
+        session = requests.Session()
+        session.headers["Authorization"] = f"token {token}"
+
+        # Fetch the list of user repositories
+        response = session.get(f"https://api.github.com/users/{username}/repos")
+
+        if response.status_code == 200:
+            repositories = response.json()
+            if repositories:
+                repo_names = [repo["name"] for repo in repositories]
+                self.repo_combo_box.clear()
+                self.repo_combo_box.addItems(repo_names)
+                self.repo_combo_box.setEnabled(True)
+                self.repo_details_browser.setPlainText("Select a repository from the list above.")
+            else:
+                self.repo_details_browser.setPlainText("No repositories found.")
+        else:
+            self.repo_details_browser.setPlainText(f"Failed to fetch repositories. Status code: {response.status_code}")
+
+    def create_repository(self):
+        username = self.username_input.text()
+        token = self.token_input.text()
+
+        if not username or not token:
+            QMessageBox.warning(self, "Warning", "Please enter your GitHub username and Personal Access Token (PAT).")
+            return
+
+        # Create a session and authenticate with GitHub using the token
+        session = requests.Session()
+        session.headers["Authorization"] = f"token {token}"
+
+        # Get repository name from user input
+        repo_name, ok = QInputDialog.getText(self, "Create Repository", "Enter the repository name:")
+        if ok and repo_name:
+            # Create the repository
+            response = session.post(f"https://api.github.com/user/repos", json={"name": repo_name})
+
+            if response.status_code == 201:
+                QMessageBox.information(self, "Success", f"Repository '{repo_name}' created successfully.")
+            else:
+                QMessageBox.warning(self, "Error", f"Failed to create repository. Status code: {response.status_code}")
+
+    def clone_repository(self):
+        username = self.username_input.text()
+        token = self.token_input.text()
+        repo_name = self.repo_combo_box.currentText()
+
+        # Specify the local directory where the repository will be cloned
+        local_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Clone Repository")
+
+        if local_dir:
+            # Create a session and authenticate with GitHub using the token
+            session = requests.Session()
+            session.headers["Authorization"] = f"token {token}"
+
+            # Fetch the repository URL
+            response = session.get(f"https://api.github.com/repos/{username}/{repo_name}")
+            
+            if response.status_code == 200:
+                repo_info = response.json()
+                repo_url = repo_info["clone_url"]
+                
+                # Clone the repository using Git
+                os.system(f"git clone {repo_url} {os.path.join(local_dir, repo_name)}")
+
+                QMessageBox.information(self, "Success", f"Repository '{repo_name}' cloned successfully.")
+            else:
+                QMessageBox.warning(self, "Error", f"Failed to fetch repository information. Status code: {response.status_code}")
+
+    def delete_repository(self):
+        username = self.username_input.text()
+        token = self.token_input.text()
+        repo_name = self.repo_combo_box.currentText()
+
+        # Create a session and authenticate with GitHub using the token
+        session = requests.Session()
+        session.headers["Authorization"] = f"token {token}"
+
+        # Confirm the deletion action
+        confirm = QMessageBox.question(self, "Confirm Deletion", f"Do you really want to delete the repository '{repo_name}'?", QMessageBox.Yes | QMessageBox.No)
+
+        if confirm == QMessageBox.Yes:
+            # Delete the repository
+            response = session.delete(f"https://api.github.com/repos/{username}/{repo_name}")
+            
+            if response.status_code == 204:
+                QMessageBox.information(self, "Success", f"Repository '{repo_name}' deleted successfully.")
+            else:
+                QMessageBox.warning(self, "Error", f"Failed to delete repository. Status code: {response.status_code}")
+
+    def view_repository_contents(self):
+        username = self.username_input.text()
+        token = self.token_input.text()
+        repo_name = self.repo_combo_box.currentText()
+
+        if not username or not token:
+            QMessageBox.warning(self, "Warning", "Please enter your GitHub username and Personal Access Token (PAT).")
+            return
+
+        # Create a session and authenticate with GitHub using the token
+        session = requests.Session()
+        session.headers["Authorization"] = f"token {token}"
+
+        # Fetch the contents of the repository
+        response = session.get(f"https://api.github.com/repos/{username}/{repo_name}/contents")
+
+        if response.status_code == 200:
+            contents = response.json()
+            if contents:
+                # Display the contents in the text browser
+                content_list = [f"Name: {item['name']}, Type: {item['type']}" for item in contents]
+                content_text = "\n".join(content_list)
+                self.repo_details_browser.setPlainText(content_text)
+            else:
+                self.repo_details_browser.setPlainText("No contents found.")
+        else:
+            self.repo_details_browser.setPlainText(f"Failed to fetch repository contents. Status code: {response.status_code}")
+
+    def commit_and_push_changes(self):
+        username = self.username_input.text()
+        token = self.token_input.text()
+        repo_name = self.repo_combo_box.currentText()
+
+        if not username or not token:
+            QMessageBox.warning(self, "Warning", "Please enter your GitHub username and Personal Access Token (PAT).")
+            return
+
+        # Create a session and authenticate with GitHub using the token
+        session = requests.Session()
+        session.headers["Authorization"] = f"token {token}"
+
+        # Specify the local directory of the Git repository
+        local_repo_dir = os.path.join(os.getcwd(), repo_name)
+
+        # Add the file(s) to the Git repository
+        add_file_dialog = QFileDialog(self)
+        add_file_dialog.setFileMode(QFileDialog.ExistingFiles)
+        selected_files, _ = add_file_dialog.getOpenFileNames(self, "Select Files to Add", local_repo_dir)
+        
+        if selected_files:
+            for file_path in selected_files:
+                os.system(f"git -C {local_repo_dir} add '{file_path}'")
+
+            # Commit the changes with a commit message
+            commit_message, ok = QInputDialog.getText(self, "Commit Changes", "Enter a commit message:")
+            if ok and commit_message:
+                os.system(f"git -C {local_repo_dir} commit -m '{commit_message}'")
+
+                # Push the changes to the remote GitHub repository
+                os.system(f"git -C {local_repo_dir} push origin master")  # You can change 'master' to the appropriate branch name
+
+                QMessageBox.information(self, "Success", "Changes committed and pushed successfully.")
+            else:
+                QMessageBox.warning(self, "Warning", "Please enter a commit message.")
+        else:
+            QMessageBox.warning(self, "Warning", "No files selected to add.")
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = GitHubRepoManager()
+    window.show()
+    sys.exit(app.exec_())

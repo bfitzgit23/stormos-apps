@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+from PyQt5.QtCore import Qt, QUrl, QTimer
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel, QFileDialog, QDesktopWidget, QSizePolicy, QMenu
+from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+from PyQt5.QtMultimediaWidgets import QVideoWidget
+from PyQt5.QtGui import QIcon
+
+class VideoPlayer(QMainWindow):
+    def __init__(self, video_path=None, video_title=None):
+        super().__init__()
+
+        self.setWindowTitle("StormOS Video Player")
+        self.setGeometry(100, 100, 1200, 800)
+
+        self.media_player = QMediaPlayer(self)
+        self.video_widget = QVideoWidget(self)
+        self.media_player.setVideoOutput(self.video_widget)
+
+        self.central_widget = QWidget(self)
+        self.setCentralWidget(self.central_widget)
+
+        self.layout = QVBoxLayout(self.central_widget)
+
+        self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.layout.addWidget(self.video_widget)
+
+        self.load_button = QPushButton("Load")
+        self.load_button.setIcon(QIcon.fromTheme("document-open"))
+        self.load_button.clicked.connect(self.open_video_dialog)
+
+        self.play_button = QPushButton("Play")
+        self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
+        self.play_button.clicked.connect(self.play_pause)
+
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setIcon(QIcon.fromTheme("media-playback-stop"))
+        self.stop_button.clicked.connect(self.media_player.stop)
+
+        self.fullscreen_button = QPushButton("Fullscreen")
+        self.fullscreen_button.setIcon(QIcon.fromTheme("view-fullscreen"))
+        self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
+
+        self.backward_button = QPushButton("<<")
+        self.backward_button.clicked.connect(self.backward)
+
+        self.forward_button = QPushButton(">>")
+        self.forward_button.clicked.connect(self.forward)
+
+        self.seek_slider = QSlider(Qt.Horizontal)
+        self.seek_slider.setRange(0, 0)
+        self.seek_slider.sliderMoved.connect(self.set_position)
+
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(50)
+        self.volume_slider.valueChanged.connect(self.set_volume)
+
+        self.volume_label = QLabel("Volume:")
+        self.volume_label.setAlignment(Qt.AlignRight)
+
+        self.volume_percentage_label = QLabel("50%")
+        self.volume_percentage_label.setAlignment(Qt.AlignLeft)
+
+        self.seek_time_label_start = QLabel("0:00")
+        self.seek_time_label_start.setAlignment(Qt.AlignLeft)
+
+        self.seek_time_label_end = QLabel("0:00")
+        self.seek_time_label_end.setAlignment(Qt.AlignRight)
+
+        volume_layout = QHBoxLayout()
+        volume_layout.addWidget(self.volume_percentage_label)
+        volume_layout.addWidget(self.volume_slider)
+
+        control_layout = QHBoxLayout()
+        control_layout.addWidget(self.load_button)
+        control_layout.addWidget(self.play_button)
+        control_layout.addWidget(self.stop_button)
+        control_layout.addWidget(self.backward_button)
+        control_layout.addWidget(self.seek_time_label_start)
+        control_layout.addWidget(self.seek_slider)
+        control_layout.addWidget(self.seek_time_label_end)
+        control_layout.addWidget(self.forward_button)
+        control_layout.addLayout(volume_layout)
+        control_layout.addWidget(self.fullscreen_button)
+
+        self.layout.addLayout(control_layout)
+
+        self.media_player.durationChanged.connect(self.update_duration)
+        self.media_player.positionChanged.connect(self.update_position)
+        self.media_player.stateChanged.connect(self.update_buttons)
+
+        self.video_widget.setFocusPolicy(Qt.StrongFocus)
+
+        self.center_window()
+
+        self.is_fullscreen = False
+        self.video_title = ""  # Initialize video title
+
+        # Timer to periodically update playback information
+        self.info_timer = QTimer(self)
+        self.info_timer.timeout.connect(self.update_info)
+        self.info_timer.start(1000)  # Update every 1 second
+
+        # Set the video title based on the provided title or file path
+        if video_title:
+            self.video_title = video_title
+            self.setWindowTitle(f"StormOS Video Player - {self.video_title}")
+        elif video_path:
+            self.open_video(video_path)
+
+        # Set up the context menu for the video widget
+        self.video_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.video_widget.customContextMenuRequested.connect(self.show_context_menu)
+
+    def center_window(self):
+        screen = QDesktopWidget().screenGeometry()
+        size = self.geometry()
+        x = (screen.width() - size.width()) // 2
+        y = (screen.height() - size.height()) // 2
+        self.move(x, y)
+
+    def open_video_dialog(self):
+        options = QFileDialog.Options()
+        options |= QFileDialog.ReadOnly
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Video File", "", "Video Files (*.mp4 *.m3u8);;All Files (*)", options=options)
+        if file_path:
+            self.open_video(file_path)
+
+    def open_video(self, file_path):
+        self.video_path = file_path
+        self.media_player.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
+        self.play_pause()
+
+        # Set the custom window title with the video title
+        self.video_title = os.path.basename(file_path)  # Update video title
+        self.setWindowTitle(f"StormOS Video Player - {self.video_title}")
+
+    def play_pause(self):
+        if self.media_player.state() == QMediaPlayer.PlayingState:
+            self.media_player.pause()
+        else:
+            self.media_player.play()
+
+    def set_position(self, position):
+        self.media_player.setPosition(position)
+
+    def set_volume(self, volume):
+        self.media_player.setVolume(volume)
+        self.volume_percentage_label.setText(f"{volume}%")
+
+    def toggle_fullscreen(self):
+        if not self.is_fullscreen:
+            self.showFullScreen()
+            self.is_fullscreen = True
+        else:
+            self.showNormal()
+            self.is_fullscreen = False
+
+    def backward(self):
+        self.media_player.setPosition(self.media_player.position() - 30000)  # Seek back by 30 seconds
+
+    def forward(self):
+        self.media_player.setPosition(self.media_player.position() + 30000)  # Seek forward by 30 seconds
+
+    def update_duration(self, duration):
+        self.seek_slider.setRange(0, duration)
+        self.seek_time_label_end.setText(self.format_time(duration / 1000))  # Update end time label
+
+    def update_position(self, position):
+        self.seek_slider.setValue(position)
+        self.seek_time_label_start.setText(self.format_time(position / 1000))  # Update start time label
+
+    def update_buttons(self, state):
+        if state == QMediaPlayer.PlayingState:
+            self.play_button.setIcon(QIcon.fromTheme("media-playback-pause"))
+        else:
+            self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
+
+    def update_info(self):
+        # Update playback information periodically
+        if self.media_player.state() == QMediaPlayer.PlayingState:
+            position = self.media_player.position()
+            duration = self.media_player.duration()
+            percentage = int((position / duration) * 100)
+            remaining_time = self.format_time((duration - position) / 1000)
+        else:
+            percentage = 0
+            remaining_time = "0:00"
+
+        if self.video_title:
+            self.setWindowTitle(f"StormOS Video Player - {self.video_title} {percentage}% Complete | {remaining_time} Left")
+        else:
+            self.setWindowTitle(f"StormOS Video Player {percentage}% Complete | {remaining_time} Left")
+
+    def format_time(self, seconds):
+        minutes, seconds = divmod(int(seconds), 60)
+        return "{:d}:{:02d}".format(minutes, seconds)
+
+    def show_context_menu(self, pos):
+        context_menu = QMenu(self)
+
+        # Add "Play/Pause" action
+        play_pause_action = context_menu.addAction("Play/Pause")
+        play_pause_action.triggered.connect(self.play_pause)
+
+        # Add "Fast Forward 30s" action
+        fast_forward_action = context_menu.addAction("Fast Forward 30s")
+        fast_forward_action.triggered.connect(self.fast_forward)
+
+        # Add "Reverse 30s" action
+        reverse_action = context_menu.addAction("Reverse 30s")
+        reverse_action.triggered.connect(self.reverse)
+
+        action = context_menu.exec_(self.video_widget.mapToGlobal(pos))
+
+
+
+    # Add the fast_forward and reverse methods
+    def fast_forward(self):
+        self.media_player.setPosition(self.media_player.position() + 30000)  # Fast forward by 30 seconds
+
+    def reverse(self):
+        self.media_player.setPosition(self.media_player.position() - 30000)  # Reverse by 30 seconds        
+
+    # Modify the keyPressEvent method
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Space:
+            self.play_pause()
+        elif event.key() == Qt.Key_Escape:
+            # Toggle fullscreen mode when the "Escape" key is pressed
+            if self.is_fullscreen:
+                self.showNormal()
+                self.is_fullscreen = False
+        elif event.key() == Qt.Key_Right:  # Right arrow key for seeking forward
+            self.forward()
+        elif event.key() == Qt.Key_Left:  # Left arrow key for seeking backward
+            self.backward()
+      
+
+def main():
+    app = QApplication(sys.argv)
+
+    video_path = None
+    video_title = None
+
+    if len(sys.argv) > 1:
+        video_path = sys.argv[1]
+        if len(sys.argv) > 2:
+            video_title = sys.argv[2]
+
+    player = VideoPlayer(video_path, video_title)
+
+    player.show()
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,491 @@
+#!/usr/bin/env python3
+
+import sys
+import json
+import os
+import subprocess
+from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit,
+                             QListWidget, QListWidgetItem, QInputDialog, QMessageBox, QDateEdit, QLabel,
+                             QFileDialog)
+from PyQt5.QtCore import Qt, QDate
+from PyQt5.QtGui import QColor
+
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QDialogButtonBox
+from PyQt5.QtCore import QUrl
+from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtWidgets import QListWidgetItem, QApplication
+from PyQt5.QtGui import QTextDocument
+from PyQt5.QtWidgets import QMenu, QAction
+import re
+
+class TodoApp(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        self.data_file = os.path.join(os.path.expanduser("~"), "Documents", "todo_data.json")
+        self.attachments_folder = os.path.join(os.path.expanduser("~"), "Documents", "todo_attachments")
+        if not os.path.exists(self.attachments_folder):
+            os.makedirs(self.attachments_folder)
+
+        self.initUI()
+        self.loadTasks()
+        
+
+
+        # Connect the drag-and-drop event
+        self.listTasks.setDragDropMode(QListWidget.InternalMove)
+        self.listTasks.setDefaultDropAction(Qt.MoveAction)
+        self.listTasks.setSelectionMode(QListWidget.SingleSelection)
+        self.listTasks.setDragEnabled(True)
+        self.listTasks.itemDoubleClicked.connect(self.openAttachment)
+
+        # Connected to open Notes after double clicking on it
+        self.listTasks.itemDoubleClicked.connect(self.handleItemDoubleClicked)
+
+        
+
+    def initUI(self):
+        self.layout = QVBoxLayout()
+
+        self.taskLayout = QHBoxLayout()
+        self.inputTask = QLineEdit(self)
+        self.inputTask.setPlaceholderText("Enter your task here...")
+        self.dueDate = QDateEdit(self)
+        self.dueDate.setDate(QDate.currentDate())
+        self.btnAdd = QPushButton("Add Task", self)
+        self.btnAdd.clicked.connect(self.addTask)
+
+        self.taskLayout.addWidget(self.inputTask)
+        self.taskLayout.addWidget(self.dueDate)
+        self.taskLayout.addWidget(self.btnAdd)
+        self.layout.addLayout(self.taskLayout)
+
+        self.btnSubtask = QPushButton("Add Subtask", self)
+        self.btnSubtask.clicked.connect(self.addSubTask)
+        self.btnDelete = QPushButton("Delete", self)
+        self.btnDelete.clicked.connect(self.deleteTaskOrSubtask)
+        self.btnComplete = QPushButton("Mark as Complete", self)
+        self.btnComplete.clicked.connect(self.completeTaskOrSubtask)
+        self.btnEdit = QPushButton("Edit", self)
+        self.btnEdit.clicked.connect(self.editTaskOrSubtask)
+        self.btnAttach = QPushButton("Attach File", self)
+        self.btnAttach.clicked.connect(self.attachFile)
+
+        # Add the "Add Note" button
+        self.btnAddNote = QPushButton("Add Note", self)
+        self.btnAddNote.clicked.connect(self.addNote)
+        self.layout.addWidget(self.btnAddNote)
+
+        self.listTasks = QListWidget(self)
+
+        self.layout.addWidget(self.btnSubtask)
+        self.layout.addWidget(self.btnDelete)
+        self.layout.addWidget(self.btnComplete)
+        self.layout.addWidget(self.btnEdit)
+        self.layout.addWidget(self.btnAttach)
+        self.layout.addWidget(self.listTasks)
+        self.setLayout(self.layout)
+
+        self.setWindowTitle('StormOS To-Do App')
+        self.resize(400, 500)
+
+    def addTask(self):
+        task = self.inputTask.text().strip()
+        due_date = self.dueDate.date().toString(Qt.ISODate)
+        if task:
+            data = self.loadJson()
+            data.append({
+                "task": task,
+                "due_date": due_date,
+                "completed": False,
+                "subtasks": [],
+                "notes": []
+            })
+
+            self.saveJson(data)
+            self.loadTasks()
+            self.inputTask.clear()
+        else:
+            QMessageBox.warning(self, "Warning", "Please enter a task!")
+
+    def addSubTask(self):
+        row = self.listTasks.currentRow()
+        if row != -1 and not self.isSubtask(row):
+            subtask, ok = QInputDialog.getText(self, 'Add subtask', 'Subtask:')
+            if ok and subtask.strip():
+                data = self.loadJson()
+                due_date = QDateEdit().date().toString(Qt.ISODate)
+
+                if "subtasks" not in data[row]:
+                    data[row]["subtasks"] = []
+
+                data[row]["subtasks"].append({
+                    "task": subtask.strip(),
+                    "due_date": due_date,
+                    "completed": False
+                })
+                self.saveJson(data)
+                self.loadTasks()
+
+    def isSubtask(self, row):
+        item = self.listTasks.item(row)
+        return item.text().startswith("  ->")
+
+    def getMainTaskRow(self, subtask_row):
+        for i in range(subtask_row, -1, -1):
+            if not self.isSubtask(i):
+                return i
+        return -1
+
+    def deleteTaskOrSubtask(self):
+        row = self.listTasks.currentRow()
+        if row != -1:
+            data = self.loadJson()
+            selected_text = self.listTasks.item(row).text()
+            item_deleted = False
+
+            # First check if selected item is a task
+            for task_data in data:
+                if task_data["task"] == selected_text:
+                    data.remove(task_data)
+                    item_deleted = True
+                    break
+            
+            # If not a task, then check if it's a subtask
+            if not item_deleted:
+                for task_data in data:
+                    if "subtasks" in task_data:
+                        for subtask_data in task_data["subtasks"]:
+                            if "  - " + subtask_data["task"] == selected_text:
+                                task_data["subtasks"].remove(subtask_data)
+                                item_deleted = True
+                                break
+
+            # If not a task or subtask, check if it's a note
+            if not item_deleted:
+                note_prefix = "    [Note]: "
+                for task_data in data:
+                    if "notes" in task_data:
+                        for note_content in task_data["notes"]:
+                            if note_prefix + note_content == selected_text:
+                                task_data["notes"].remove(note_content)
+                                item_deleted = True
+                                break
+
+            self.saveJson(data)
+            self.loadTasks()
+
+
+
+
+
+    def completeTaskOrSubtask(self):
+        row = self.listTasks.currentRow()
+        if row != -1:
+            data = self.loadJson()
+            if self.isSubtask(row):
+                main_task_row = self.getMainTaskRow(row)
+                data[main_task_row]["subtasks"][row - main_task_row - 1]["completed"] = True
+            else:
+                data[row]["completed"] = True
+            self.saveJson(data)
+            self.loadTasks()
+
+    def editTaskOrSubtask(self):
+        row = self.listTasks.currentRow()
+        if row != -1 and row < self.listTasks.count():
+            data = self.loadJson()
+            selected_text = self.listTasks.item(row).text()
+            if self.isSubtask(row):
+                main_task_row = self.getMainTaskRow(row)
+                if main_task_row != -1 and main_task_row < len(data):
+                    subtask_index = row - main_task_row - 1
+                    if subtask_index < len(data[main_task_row]["subtasks"]):
+                        task, ok = QInputDialog.getText(self, 'Edit subtask', 'Subtask:', text=data[main_task_row]["subtasks"][subtask_index]["task"])
+                        if ok:
+                            data[main_task_row]["subtasks"][subtask_index]["task"] = task
+            elif selected_text.startswith("    [Note]: "):
+                # Edit Note
+                note_content = selected_text[len("    [Note]: "):]
+                for task_data in data:
+                    if note_content in task_data["notes"]:
+                        new_note, ok = QInputDialog.getMultiLineText(self, 'Edit Note', 'Note:', text=note_content)
+                        if ok:
+                            task_data["notes"][task_data["notes"].index(note_content)] = new_note
+            else:
+                if row < len(data):
+                    task, ok = QInputDialog.getText(self, 'Edit task', 'Task:', text=data[row]["task"])
+                    if ok:
+                        data[row]["task"] = task
+            self.saveJson(data)
+            self.loadTasks()
+
+
+
+    def attachFile(self):
+        row = self.listTasks.currentRow()
+        if row == -1:
+            QMessageBox.warning(self, "No task selected", "Please select a task to attach a file to.")
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "All Files (*)")
+
+        if not file_path:
+            return
+
+        data = self.loadJson()
+
+        if "attachments" not in data[row]:
+            data[row]["attachments"] = []
+
+        data[row]["attachments"].append(file_path)
+        self.saveJson(data)
+        self.loadTasks()
+
+    def openAttachment(self, item):
+        item_text = item.text()
+
+        # Check if the item is a note with a URL
+        if "[Note]:" in item_text:
+            note_content = item_text.split(":")[1].strip()
+            if note_content.startswith("http://") or note_content.startswith("https://") or note_content.startswith("www."):
+                QDesktopServices.openUrl(QUrl(note_content))
+                return
+
+        # Otherwise, open attached file
+        if "[Attachment]:" in item_text or "[Sub-Attachment]:" in item_text:
+            file_path = item_text.split(":", 1)[1].strip()
+            try:
+                subprocess.run(['xdg-open', file_path])  # On Linux-based systems
+            except Exception as e:
+                print("Error opening attachment:", e)
+
+
+
+
+
+    def loadJson(self):
+        if os.path.exists(self.data_file):
+            with open(self.data_file, "r") as file:
+                return json.load(file)
+        else:
+            return []
+
+    def saveJson(self, data):
+        with open(self.data_file, "w") as file:
+            json.dump(data, file)
+
+    def loadTasks(self):
+        self.listTasks.clear()
+        data = self.loadJson()
+
+        for task_data in data:
+            item = RichTextListItem(task_data["task"])
+            if task_data.get("completed", False):
+                item.setForeground(Qt.gray)
+            else:
+                item.setBackground(Qt.blue)  # Main task background color
+            self.listTasks.addItem(item)
+
+            # Display main task's attachments
+            if "attachments" in task_data:
+                for attachment in task_data["attachments"]:
+                    attach_item = RichTextListItem("    [Attachment]: " + attachment)
+                    attach_item.setForeground(Qt.green)  # Attachment color
+                    attach_item.setBackground(Qt.lightGray)  # Attachment background color
+                    self.listTasks.addItem(attach_item)
+
+            # Display notes for the task
+            if "notes" in task_data:
+                for note in task_data["notes"]:
+                    note_item = RichTextListItem("    [Note]: " + note)
+                    note_item.setForeground(Qt.darkGray)  # Note color
+                    note_item.setBackground(Qt.lightGray)  # Note background color
+                    self.listTasks.addItem(note_item)
+                    
+                    # Check for URLs in the note and make them clickable
+                    if any(substring in note for substring in ['http://', 'https://', 'www.']):
+                        note_item.setFlags(note_item.flags() | Qt.ItemIsEnabled)
+
+            # Check and display subtasks
+            for subtask_data in task_data.get("subtasks", []):
+                sub_item = RichTextListItem("  - " + subtask_data["task"])
+                if subtask_data["completed"]:
+                    sub_item.setForeground(Qt.gray)
+                else:
+                    sub_item.setBackground(Qt.yellow)  # Subtask background color
+                self.listTasks.addItem(sub_item)
+
+                # Display subtask's attachments
+                if "attachments" in subtask_data:
+                    for attachment in subtask_data["attachments"]:
+                        attach_item = RichTextListItem("      [Sub-Attachment]: " + attachment)
+                        attach_item.setForeground(Qt.green)  # Sub-Attachment color
+                        attach_item.setBackground(Qt.lightGray)  # Sub-Attachment background color
+                        self.listTasks.addItem(attach_item)
+
+
+
+
+    def applyTaskColors(self, item, task_data):
+        if task_data["completed"]:
+            color = QColor(0, 255, 0, 127)
+            item.setBackground(color)
+        else:
+            due = QDate.fromString(task_data["due_date"], Qt.ISODate)
+            days_to_due = QDate.currentDate().daysTo(due)
+            if days_to_due < 0:
+                color = QColor(255, 0, 0, 127)
+                item.setBackground(color)
+            elif days_to_due < 3:
+                color = QColor(255, 165, 0, 127)
+                item.setBackground(color)
+
+    # Add a new method to handle item drops after reordering
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.saveJson(self.getDataFromList())
+
+    # Helper method to get task data from the list widget
+    def getDataFromList(self):
+        data = []
+        for row in range(self.listTasks.count()):
+            item = self.listTasks.item(row)
+            item_text = item.text()
+            task_data = {
+                "task": item_text,
+                "completed": item.foreground() == Qt.gray
+            }
+
+            # Check if the item has subtasks
+            if item_text.startswith("  - "):
+                main_task_row = self.getMainTaskRow(row)
+                if main_task_row != -1:
+                    task_data["main_task"] = self.listTasks.item(main_task_row).text()
+
+            data.append(task_data)
+        return data
+
+    def addNote(self):
+        try:
+            item = self.listTasks.currentItem()
+            if item:
+                row = self.listTasks.row(item)
+                if row < self.listTasks.count() and row >= 0:
+                    new_note, ok = QInputDialog.getMultiLineText(self, 'Add Note', 'Note:')
+                    if ok and new_note.strip():
+                        data = self.loadJson()
+                        data[row]["notes"].append(new_note)
+                        self.saveJson(data)
+                        self.loadTasks()
+        except Exception as e:
+            print(f"Error adding note: {e}")
+
+
+
+
+
+
+    def handleItemDoubleClicked(self, item):
+        selected_text = item.text()
+
+        # Check if the selected item is a note
+        note_prefix = "    [Note]: "
+        if selected_text.startswith(note_prefix):
+            note_content = selected_text[len(note_prefix):]  # Strip off the prefix to get the note content
+            
+            # Using the custom dialog for editing
+            dialog = NoteEditorDialog(self, note_content)
+            result = dialog.exec_()
+            
+            if result == QDialog.Accepted:
+                edited_note = dialog.textEdit.toPlainText()
+
+                # Now we replace the old note with the edited one in our data
+                row = self.listTasks.currentRow()
+                data = self.loadJson()
+
+                # Look for the task that contains the note
+                for task_data in data:
+                    if "notes" in task_data:
+                        for idx, existing_note in enumerate(task_data["notes"]):
+                            if existing_note == note_content:
+                                task_data["notes"][idx] = edited_note
+                                break
+
+
+                self.saveJson(data)
+                self.loadTasks()
+
+
+
+    def createNoteItem(self, note_text):
+        note_item = QListWidgetItem(note_text)
+        note_item.setData(Qt.UserRole, "note")  # Indicate that this item is a note
+        self.listTasks.addItem(note_item)
+        return note_item
+
+    def openUrlInNoteItem(self, item):
+        note_text = item.text()
+        url_pattern = r'(https?://[^\s]+)'
+        urls = re.findall(url_pattern, note_text)
+        if urls:
+            url = urls[0]
+            QDesktopServices.openUrl(QUrl(url))
+
+    def contextMenuEvent(self, event):
+        item = self.listTasks.itemAt(event.pos())
+        if item and item.data(Qt.UserRole) == "note":
+            context_menu = QMenu(self)
+            open_url_action = QAction("Open URL", self)
+            open_url_action.triggered.connect(lambda: self.openUrlInNoteItem(item))
+            context_menu.addAction(open_url_action)
+            context_menu.exec_(event.globalPos())
+
+
+
+
+
+
+class NoteEditorDialog(QDialog):
+    def __init__(self, parent=None, note=None):
+        super(NoteEditorDialog, self).__init__(parent)
+        
+        # Setup the layout and size
+        layout = QVBoxLayout(self)
+        self.resize(400, 300)
+        
+        # Add a QTextEdit
+        self.textEdit = QTextEdit(self)
+        if note:
+            self.textEdit.setText(note)
+        layout.addWidget(self.textEdit)
+        
+        # Add Ok and Cancel buttons
+        self.buttonBox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        layout.addWidget(self.buttonBox)
+        
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+
+
+class RichTextListItem(QListWidgetItem):
+    def __init__(self, text):
+        super().__init__(text)
+        self.setFlags(self.flags() | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        self.document = QTextDocument()
+        self.document.setHtml(text)
+    
+    def paint(self, painter, option, index):
+        painter.save()
+        self.document.setTextWidth(option.rect.width())
+        painter.translate(option.rect.topLeft())
+        self.document.drawContents(painter)
+        painter.restore()
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = TodoApp()
+    window.show()
+    sys.exit(app.exec_())

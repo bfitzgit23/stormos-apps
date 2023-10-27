@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import subprocess
+import cv2
+import datetime
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QComboBox, QCheckBox, QWidget
+from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QImage, QPixmap
+
+class WebcamPreview(QMainWindow):
+    def __init__(self):
+        super().__init__(None)
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle("Webcam Preview")
+        self.setGeometry(100, 100, 640, 480)
+        self.label = QLabel(self)
+        self.label.setGeometry(10, 10, 640, 480)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_preview)
+        self.timer.start(33)  # Update every 33 milliseconds (approximately 30 fps)
+        self.capture = cv2.VideoCapture(0)
+
+    def update_preview(self):
+        ret, frame = self.capture.read()
+        if ret:
+            frame = cv2.flip(frame, 1)  # Flip the frame horizontally
+            height, width, channel = frame.shape
+            # Ensure width and height are even numbers
+            width -= width % 2
+            height -= height % 2
+            bytes_per_line = 3 * width
+            q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+            pixmap = QPixmap.fromImage(q_image)
+            self.label.setPixmap(pixmap)
+
+class ScreenRecorderApp(QMainWindow):
+    def __init__(self):
+        super().__init__(None)
+        self.initUI()
+        self.recording = False
+        self.process = None
+        self.audio_sources = []  # List to store available audio sources
+        self.record_desktop = False  # Flag to record the entire desktop
+        self.save_as_mkv = False  # Flag to save recordings as .mkv
+
+    def initUI(self):
+        self.setWindowTitle("StormOS Screen Recorder")
+        self.setGeometry(100, 100, 330, 260)
+        self.start_button = QPushButton("Start Recording", self)
+        self.start_button.clicked.connect(self.start_recording)
+        self.start_button.setGeometry(10, 10, 140, 30)
+        self.stop_button = QPushButton("Stop Recording", self)
+        self.stop_button.clicked.connect(self.stop_recording)
+        self.stop_button.setGeometry(160, 10, 140, 30)
+        self.stop_button.setEnabled(False)
+        self.audio_dropdown = QComboBox(self)
+        self.audio_dropdown.setGeometry(10, 50, 290, 30)
+        self.refresh_audio_sources()  # Populate the audio_sources list
+        self.populate_audio_dropdown()
+        self.status_label = QLabel("Status: Not Recording", self)
+        self.status_label.setGeometry(10, 90, 290, 30)
+        self.launch_webcam_checkbox = QCheckBox("Launch Webcam Preview", self)
+        self.launch_webcam_checkbox.setGeometry(10, 130, 200, 30)
+        self.launch_webcam_checkbox.stateChanged.connect(self.toggle_webcam_preview)
+        self.desktop_checkbox = QCheckBox("Record Desktop", self)
+        self.desktop_checkbox.setGeometry(10, 170, 200, 30)
+        self.desktop_checkbox.stateChanged.connect(self.toggle_record_desktop)
+        self.mkv_checkbox = QCheckBox("Save as .mkv", self)
+        self.mkv_checkbox.setGeometry(10, 210, 200, 30)
+        self.mkv_checkbox.stateChanged.connect(self.toggle_save_as_mkv)
+        self.webcam_preview = WebcamPreview()
+        self.webcam_preview.hide()  # Hide the webcam preview initially
+
+    def refresh_audio_sources(self):
+        try:
+            # Use subprocess to get available audio input sources using pactl
+            output = subprocess.check_output(["pactl", "list", "sources"])
+            output = output.decode("utf-8")
+
+            # Parse the output to extract audio source names
+            sources = []
+            for line in output.splitlines():
+                if "Name: " in line:
+                    source_name = line.strip().split("Name: ")[-1].strip()
+                    sources.append(source_name)
+
+            self.audio_sources = sources
+        except Exception as e:
+            self.audio_sources = []
+
+    def populate_audio_dropdown(self):
+        self.audio_dropdown.clear()
+        self.audio_dropdown.addItems(self.audio_sources)
+
+    def start_recording(self):
+        if not self.recording:
+            try:
+                selected_audio_source = self.audio_dropdown.currentText()
+
+                audio_args = []
+                if selected_audio_source:
+                    audio_args += ["-f", "pulse", "-i", selected_audio_source]
+
+                if self.record_desktop:
+                    # Capture the entire desktop
+                    video_input = ":0.0"
+                    video_size = "1920x1080"  # Adjust to your screen size
+                else:
+                    # Use xwininfo to get the active window's geometry
+                    window_info = subprocess.check_output(["xwininfo", "-frame"]).decode("utf-8")
+                    geometry = {}
+                    for line in window_info.splitlines():
+                        parts = line.split(":")
+                        if len(parts) == 2:
+                            key = parts[0].strip()
+                            value = parts[1].strip()
+                            geometry[key] = value
+
+                    width = int(geometry['Width'])
+                    height = int(geometry['Height'])
+                    x = int(geometry['Absolute upper-left X'])
+                    y = int(geometry['Absolute upper-left Y'])
+
+                    # Ensure width and height are even numbers
+                    width -= width % 2
+                    height -= height % 2
+
+                    video_input = f":0.0+{x},{y}"
+                    video_size = f"{width}x{height}"
+
+                print(f"Captured Geometry: {video_size}+{video_input}")
+
+                current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                ext = ".mkv" if self.save_as_mkv else ".mp4"
+                output_file = f"recording_{current_datetime}{ext}"  # Output file name with date and time
+                output_path = os.path.expanduser("~/Videos/")  # Change to ~/Videos folder
+                output_file_path = os.path.join(output_path, output_file)
+
+                command = [
+                    "ffmpeg",
+                    "-video_size", video_size,
+                    "-framerate", "30",
+                    "-f", "x11grab",
+                    "-i", video_input,
+                    *audio_args,
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast",
+                    "-crf", "23",
+                    "-r", "30",
+                    "-vf", "format=yuv420p",
+                    "-y", output_file_path,
+                ]
+                if self.save_as_mkv:
+                    command += ["-c:v", "libx265"]  # Use libx265 for .mkv format
+
+                print(f"FFmpeg Command: {' '.join(command)}")
+
+                self.process = subprocess.Popen(command)
+                self.recording = True
+                self.start_button.setEnabled(False)
+                self.stop_button.setEnabled(True)
+                self.audio_dropdown.setEnabled(False)
+                self.launch_webcam_checkbox.setEnabled(False)
+                self.desktop_checkbox.setEnabled(False)
+                self.mkv_checkbox.setEnabled(False)
+                self.status_label.setText("Status: Recording in Progress")
+            except Exception as e:
+                self.status_label.setText(f"Failed to start recording: {e}")
+
+    def stop_recording(self):
+        if self.recording:
+            if self.process:
+                self.process.terminate()
+                self.process.wait()
+                self.recording = False
+                self.start_button.setEnabled(True)
+                self.stop_button.setEnabled(False)
+                self.audio_dropdown.setEnabled(True)
+                self.launch_webcam_checkbox.setEnabled(True)
+                self.desktop_checkbox.setEnabled(True)
+                self.mkv_checkbox.setEnabled(True)
+                self.status_label.setText("Status: Not Recording")
+
+    def toggle_webcam_preview(self):
+        if self.launch_webcam_checkbox.isChecked():
+            self.webcam_preview.show()
+        else:
+            self.webcam_preview.hide()
+
+    def toggle_record_desktop(self):
+        self.record_desktop = self.desktop_checkbox.isChecked()
+
+    def toggle_save_as_mkv(self):
+        self.save_as_mkv = self.mkv_checkbox.isChecked()
+
+def main():
+    app = QApplication(sys.argv)
+    ex = ScreenRecorderApp()
+    ex.show()
+    sys.exit(app.exec_())
+
+if __name__ == '__main__':
+    main()

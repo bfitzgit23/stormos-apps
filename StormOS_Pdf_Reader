@@ -1,0 +1,517 @@
+#!/usr/bin/env python3
+
+import time
+import sys
+import os
+import fitz  # PyMuPDF
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QPushButton, QFileDialog, QWidget,
+                             QAction, QToolBar, QLabel, QScrollArea, QSizePolicy, QInputDialog,
+                             QFileDialog, QListWidget, QListWidgetItem, QHBoxLayout, QDialog, QSplitter)
+from PyQt5.QtGui import QImage, QPixmap, QIcon
+from PyQt5.QtCore import Qt, QSize, pyqtSignal
+from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
+from gtts import gTTS  # Import gTTS for text-to-speech
+import subprocess
+import docx  # Import docx for DOCX file support
+from docx import Document  # Import the Document class
+
+# ... (rest of your code)
+
+
+
+class PDFScrollArea(QScrollArea):
+    # Add a signal for wheel scrolling
+    scroll_signal = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super(PDFScrollArea, self).__init__(parent)
+        self.parent = parent
+
+    def wheelEvent(self, event):
+        super().wheelEvent(event)
+
+        # Check if the scroll bar is at the maximum position (end of content)
+        if self.verticalScrollBar().value() == self.verticalScrollBar().maximum():
+            # Go to the next page if there is one
+            if self.parent.current_page < len(self.parent.current_document) - 1:
+                self.parent.next_page()
+                self.scroll_signal.emit(self.parent.current_page)
+
+        # Check if the scroll bar is at the minimum position (start of content)
+        elif self.verticalScrollBar().value() == self.verticalScrollBar().minimum():
+            # Go to the previous page if there is one
+            if self.parent.current_page > 0:
+                self.parent.prev_page()
+                self.scroll_signal.emit(self.parent.current_page)
+
+class DoubleClickSplitter(QSplitter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.showing_thumbnails = True
+        self.last_click_time = None
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+
+        # Check if the click is near the handle to determine if we should react
+        handle_width = self.handleWidth()
+        click_position = event.pos().x()  # Assuming horizontal splitter
+
+        if 0 <= click_position <= handle_width:
+            # Check if it's a double click
+            current_time = time.time()
+            if self.last_click_time and current_time - self.last_click_time < 0.5:
+                if self.showing_thumbnails:
+                    self.setSizes([0, self.width()])
+                    self.showing_thumbnails = False
+                else:
+                    self.setSizes([200, self.width() - 200])
+                    self.showing_thumbnails = True
+
+            self.last_click_time = current_time
+
+class PDFReaderApp(QMainWindow):
+    def __init__(self):
+        super().__init__(None)
+        self.current_document = None
+        self.current_page = 0
+        self.zoom_factor = 1.0
+        self.initUI()
+        self.setFixedSize(1200, 800)
+        self.setWindowTitle("StormOS Document Reader")  # Set the title here
+        self.audio_playing = False  # Track audio playback status
+        self.text_to_speech_converting = False  # Track text-to-speech conversion status
+        self.paplay_process = None  # Track the audio playback process
+
+    def initUI(self):
+        central_widget = QWidget(self)
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+
+        self.splitter = DoubleClickSplitter(Qt.Horizontal, central_widget)
+
+        # Thumbnails List
+        self.thumbnail_list = QListWidget(self)
+        self.thumbnail_list.setMaximumWidth(150)
+        self.thumbnail_list.itemClicked.connect(self.thumbnail_clicked)
+        self.splitter.addWidget(self.thumbnail_list)
+
+        # Document View Area
+        document_view_widget = QWidget(self)
+        document_view_layout = QVBoxLayout(document_view_widget)
+
+        self.scroll_area = PDFScrollArea(self)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.scroll_area.scroll_signal.connect(self.update_thumbnail_selection)
+        document_view_layout.addWidget(self.scroll_area)
+
+        self.document_label = QLabel(self)
+        self.scroll_area.setWidget(self.document_label)
+        self.scroll_area.setWidgetResizable(True)
+        document_view_layout.addWidget(self.scroll_area)
+
+        self.splitter.addWidget(document_view_widget)
+
+        layout.addWidget(self.splitter)
+
+        self.splitter.setSizes([200, 1000])
+
+        self.toolbar = QToolBar(self)
+        self.addToolBar(Qt.TopToolBarArea, self.toolbar)
+
+        open_action = QAction(QIcon.fromTheme("document-open"), "Open Document", self)
+        open_action.triggered.connect(self.open_document)
+        self.toolbar.addAction(open_action)
+
+        save_action = QAction(QIcon.fromTheme("document-save"), "Save Document", self)
+        save_action.triggered.connect(self.save_document)
+        self.toolbar.addAction(save_action)
+
+        save_as_png_action = QAction(QIcon.fromTheme("image-x-generic"), "Save as PNG", self)
+        save_as_png_action.triggered.connect(self.save_as_png)
+        self.toolbar.addAction(save_as_png_action)
+
+        print_action = QAction(QIcon.fromTheme("document-print"), "Print Document", self)
+        print_action.triggered.connect(self.print_document)
+        self.toolbar.addAction(print_action)
+
+        zoom_in_action = QAction(QIcon.fromTheme("zoom-in"), "Zoom In", self)
+        zoom_in_action.triggered.connect(self.zoom_in)
+        self.toolbar.addAction(zoom_in_action)
+
+        zoom_out_action = QAction(QIcon.fromTheme("zoom-out"), "Zoom Out", self)
+        zoom_out_action.triggered.connect(self.zoom_out)
+        self.toolbar.addAction(zoom_out_action)
+
+        prev_page_action = QAction(QIcon.fromTheme("go-previous"), "Previous Page", self)
+        prev_page_action.triggered.connect(self.prev_page)
+        self.toolbar.addAction(prev_page_action)
+
+        next_page_action = QAction(QIcon.fromTheme("go-next"), "Next Page", self)
+        next_page_action.triggered.connect(self.next_page)
+        self.toolbar.addAction(next_page_action)
+
+        rotate_cw_action = QAction(QIcon.fromTheme("object-rotate-right"), "Rotate Clockwise", self)
+        rotate_cw_action.triggered.connect(self.rotate_cw)
+        self.toolbar.addAction(rotate_cw_action)
+
+        rotate_ccw_action = QAction(QIcon.fromTheme("object-rotate-left"), "Rotate Counterclockwise", self)
+        rotate_ccw_action.triggered.connect(self.rotate_ccw)
+        self.toolbar.addAction(rotate_ccw_action)
+
+        fit_width_action = QAction(QIcon.fromTheme("zoom-fit-width"), "Fit Width", self)
+        fit_width_action.triggered.connect(self.fit_width)
+        self.toolbar.addAction(fit_width_action)
+
+        fit_height_action = QAction(QIcon.fromTheme("zoom-fit-height"), "Fit Height", self)
+        fit_height_action.triggered.connect(self.fit_height)
+        self.toolbar.addAction(fit_height_action)
+
+        self.is_fullscreen = False
+        self.fullscreen_action = QAction(QIcon.fromTheme("view-fullscreen"), "Toggle Fullscreen", self)
+        self.fullscreen_action.triggered.connect(self.toggle_fullscreen)
+        self.toolbar.addAction(self.fullscreen_action)
+
+        # Add a play button for text-to-speech
+        self.play_text_action = QAction(QIcon.fromTheme("media-playback-start"), "Play Text-to-Speech", self)
+        self.play_text_action.triggered.connect(self.play_text_to_speech)
+        self.toolbar.addAction(self.play_text_action)
+
+        # Add a pause button for audio playback
+        self.pause_text_action = QAction(QIcon.fromTheme("media-playback-pause"), "Pause Audio", self)
+        self.pause_text_action.triggered.connect(self.pause_audio)
+        self.toolbar.addAction(self.pause_text_action)
+        self.pause_text_action.setEnabled(False)  # Initially disabled
+
+        # Add a stop button for audio playback
+        self.stop_text_action = QAction(QIcon.fromTheme("media-playback-stop"), "Stop Audio", self)
+        self.stop_text_action.triggered.connect(self.stop_audio)
+        self.toolbar.addAction(self.stop_text_action)
+        self.stop_text_action.setEnabled(False)  # Initially disabled
+
+        # Add a label for status indicators
+        self.status_label = QLabel(self)
+        self.toolbar.addWidget(self.status_label)
+
+    def sync_thumbnail_view(self):
+        # Assuming each page has the same height for simplicity
+        page_height = self.current_document[0].height()
+        # Get the currently visible position in the main view
+        visible_position = self.scroll_area.verticalScrollBar().value()
+        # Calculate the predominantly visible page
+        current_page = visible_position // page_height
+        # Highlight the corresponding thumbnail
+        self.thumbnail_list.setCurrentRow(current_page)
+
+    def toggle_fullscreen(self):
+        self.is_fullscreen = not self.is_fullscreen
+        if self.is_fullscreen:
+            self.showFullScreen()
+        else:
+            self.showNormal()
+
+    def open_document(self, file_path=None):
+        if not file_path:
+            file_path, _ = QFileDialog.getOpenFileName(self, "Open Document", "", "Supported Files (*.pdf *.docx *.txt)")
+        if file_path:
+            file_extension = os.path.splitext(file_path)[1].lower()
+
+            if file_extension == ".pdf":
+                document = fitz.open(file_path)
+                self.current_document = document
+                self.show_page(0)
+                self.load_thumbnails()
+            elif file_extension == ".docx":
+                document = Document(file_path)
+                self.current_document = document
+                self.show_docx_text()
+            elif file_extension == ".txt":
+                with open(file_path, "r", encoding="utf-8") as txt_file:
+                    text_content = txt_file.read()
+                    self.current_document = text_content
+                    self.show_txt_text()
+
+    def save_document(self):
+        if self.current_document:
+            file_name, _ = QFileDialog.getSaveFileName(self, "Save Document", "", "Supported Files (*.pdf *.docx *.txt)")
+            if file_name:
+                file_extension = os.path.splitext(file_name)[1].lower()
+
+                if file_extension == ".pdf":
+                    if isinstance(self.current_document, fitz.Document):
+                        self.current_document.save(file_name)
+                    elif isinstance(self.current_document, Document):
+                        pdf = fitz.open()
+                        pdf_document = fitz.open()
+                        pdf_document.insert_pdf(pdf)
+                        pdf_document.save(file_name)
+                elif file_extension == ".docx":
+                    if isinstance(self.current_document, Document):
+                        self.current_document.save(file_name)
+                    else:
+                        # Create a new DOCX document
+                        doc = Document()
+                        if isinstance(self.current_document, str):
+                            # If the current document is text, add it to the DOCX document
+                            doc.add_paragraph(self.current_document)
+                        doc.save(file_name)
+                elif file_extension == ".txt":
+                    if isinstance(self.current_document, str):
+                        with open(file_name, "w", encoding="utf-8") as txt_file:
+                            txt_file.write(self.current_document)
+
+    def save_as_png(self):
+        if self.current_document:
+            page = self.current_document.load_page(self.current_page)
+            image = page.get_pixmap(matrix=fitz.Matrix(self.zoom_factor, self.zoom_factor))
+            q_image = QImage(image.samples, image.width, image.height, image.stride, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_image)
+            file_name, _ = QFileDialog.getSaveFileName(self, "Save as PNG", os.path.expanduser("~/Pictures"), "PNG Files (*.png)")
+            if file_name:
+                if not file_name.lower().endswith('.png'):
+                    file_name += '.png'
+                pixmap.save(file_name, "PNG")
+
+    def print_document(self):
+        if self.current_document:
+            printer = QPrinter(QPrinter.HighResolution)
+            dialog = QPrintDialog(printer, self)
+            if dialog.exec_() == QPrintDialog.Accepted:
+                painter = QPainter()
+                painter.begin(printer)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setRenderHint(QPainter.TextAntialiasing)
+
+                if isinstance(self.current_document, fitz.Document):
+                    # PDF Document
+                    page = self.current_document.load_page(self.current_page)
+                    image = page.get_pixmap(matrix=fitz.Matrix(self.zoom_factor, self.zoom_factor))
+                    q_image = QImage(image.samples, image.width, image.height, image.stride, QImage.Format_RGB888)
+                    pixmap = QPixmap.fromImage(q_image)
+                    pixmap = pixmap.scaledToWidth(printer.width())
+                    painter.drawPixmap(0, 0, pixmap)
+                elif isinstance(self.current_document, Document):
+                    # DOCX Document
+                    font_size = Pt(12)
+                    document = self.current_document
+                    for paragraph in document.paragraphs:
+                        for run in paragraph.runs:
+                            run.font.size = font_size
+                    document.save("print_temp.docx")
+                    os.system(f"libreoffice --headless --convert-to pdf print_temp.docx")
+                    pdf_file = fitz.open("print_temp.pdf")
+                    page = pdf_file.load_page(0)
+                    image = page.get_pixmap(matrix=fitz.Matrix(self.zoom_factor, self.zoom_factor))
+                    q_image = QImage(image.samples, image.width, image.height, image.stride, QImage.Format_RGB888)
+                    pixmap = QPixmap.fromImage(q_image)
+                    pixmap = pixmap.scaledToWidth(printer.width())
+                    painter.drawPixmap(0, 0, pixmap)
+                    pdf_file.close()
+                    os.remove("print_temp.docx")
+                    os.remove("print_temp.pdf")
+
+                painter.end()
+
+    def show_page(self, page_num):
+        if self.current_document:
+            self.current_page = page_num
+            if isinstance(self.current_document, fitz.Document):
+                page = self.current_document.load_page(page_num)
+                image = page.get_pixmap(matrix=fitz.Matrix(self.zoom_factor, self.zoom_factor))
+                q_image = QImage(image.samples, image.width, image.height, image.stride, QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(q_image)
+                self.document_label.setPixmap(pixmap)
+            elif isinstance(self.current_document, Document):
+                self.show_docx_text()
+
+    def zoom_in(self):
+        self.zoom_factor *= 1.1
+        self.show_page(self.current_page)
+
+    def zoom_out(self):
+        self.zoom_factor /= 1.1
+        self.show_page(self.current_page)
+
+    def prev_page(self):
+        if isinstance(self.current_document, fitz.Document) and self.current_page > 0:
+            self.current_page -= 1
+            self.show_page(self.current_page)
+            self.update_thumbnail_selection(self.current_page)
+        elif type(self.current_document) == docx.Document:
+            # For DOCX files, show the previous page by updating the current_page attribute
+            if self.current_page > 0:
+                self.current_page -= 1
+                self.show_docx_text()
+                self.update_thumbnail_selection(self.current_page)
+            else:
+                self.current_page = 0
+
+    def next_page(self):
+        if isinstance(self.current_document, fitz.Document) and self.current_page < len(self.current_document) - 1:
+            self.current_page += 1
+            self.show_page(self.current_page)
+            self.update_thumbnail_selection(self.current_page)
+        elif type(self.current_document) == docx.Document:
+            # For DOCX files, show the next page by updating the current_page attribute
+            if self.current_page < len(self.current_document.paragraphs) - 1:
+                self.current_page += 1
+                self.show_docx_text()
+                self.update_thumbnail_selection(self.current_page)
+            else:
+                self.current_page = len(self.current_document.paragraphs) - 1
+
+    def rotate_cw(self):
+        if isinstance(self.current_document, fitz.Document):
+            page = self.current_document.load_page(self.current_page)
+            page.set_rotation(page.rotation + 90)
+            self.show_page(self.current_page)
+
+    def rotate_ccw(self):
+        if isinstance(self.current_document, fitz.Document):
+            page = self.current_document.load_page(self.current_page)
+            page.set_rotation(page.rotation - 90)
+            self.show_page(self.current_page)
+
+    def fit_width(self):
+        if isinstance(self.current_document, fitz.Document):
+            page = self.current_document.load_page(self.current_page)
+            page_width = page.bound().width
+            view_width = self.scroll_area.viewport().width()
+            self.zoom_factor = view_width / page_width
+            self.show_page(self.current_page)
+
+    def fit_height(self):
+        if isinstance(self.current_document, fitz.Document):
+            page = self.current_document.load_page(self.current_page)
+            page_height = page.bound().height
+            view_height = self.scroll_area.viewport().height()
+            self.zoom_factor = view_height / page_height
+            self.show_page(self.current_page)
+
+    def load_thumbnails(self):
+        if isinstance(self.current_document, fitz.Document):
+            self.thumbnail_list.clear()
+
+            THUMBNAIL_SIZE = 200  # New desired thumbnail size
+
+            # Set the icon size for the QListWidget
+            self.thumbnail_list.setIconSize(QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE))
+
+            # Set the list view mode to IconMode
+            self.thumbnail_list.setViewMode(QListWidget.IconMode)
+
+            # Set the alignment and spacing
+            self.thumbnail_list.setItemAlignment(Qt.AlignTop)
+            self.thumbnail_list.setSpacing(10)
+
+            for i in range(len(self.current_document)):
+                page = self.current_document.load_page(i)
+                aspect_ratio = page.rect.width / page.rect.height
+                target_width = THUMBNAIL_SIZE if aspect_ratio >= 1 else int(THUMBNAIL_SIZE * aspect_ratio)
+                target_height = THUMBNAIL_SIZE if aspect_ratio <= 1 else int(THUMBNAIL_SIZE / aspect_ratio)
+
+                zoom_x = target_width / page.rect.width
+                zoom_y = target_height / page.rect.height
+                image = page.get_pixmap(matrix=fitz.Matrix(zoom_x, zoom_y))
+
+                q_image = QImage(image.samples, image.width, image.height, image.stride, QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(q_image)
+
+                item = QListWidgetItem(QIcon(pixmap), f"Page {i + 1}")
+                self.thumbnail_list.addItem(item)
+
+            # Add a bit more width for aesthetics, so thumbnails are not clipped
+            self.thumbnail_list.setMaximumWidth(THUMBNAIL_SIZE + 20)
+
+    def thumbnail_clicked(self, item):
+        # Get the page number from the clicked item's text
+        page_num = int(item.text().split()[-1]) - 1
+        if isinstance(self.current_document, fitz.Document):
+            self.show_page(page_num)
+        elif type(self.current_document) == docx.Document:
+            # For DOCX files, show the corresponding page by updating the current_page attribute
+            self.current_page = page_num
+            self.show_docx_text()
+
+
+    def update_thumbnail_selection(self, page):
+        # Highlight the corresponding thumbnail when scrolling in the main view
+        self.thumbnail_list.setCurrentRow(page)
+
+    def show_docx_text(self):
+        if type(self.current_document) == docx.Document:
+            text = ""
+            for paragraph in self.current_document.paragraphs:
+                text += paragraph.text + "\n"
+            self.document_label.setText(text)
+
+
+
+    def show_txt_text(self):
+        if isinstance(self.current_document, str):
+            self.document_label.setText(self.current_document)
+
+    def play_text_to_speech(self):
+        if isinstance(self.current_document, fitz.Document) or type(self.current_document) == docx.Document:
+            if self.text_to_speech_converting:
+                # If text-to-speech conversion is in progress, stop it
+                self.text_to_speech_converting = False
+                self.status_label.setText("Text-to-Speech Stopped")
+                return
+
+            if self.audio_playing:
+                # If audio is currently playing, stop it
+                self.stop_audio()
+
+            if isinstance(self.current_document, fitz.Document):
+                page = self.current_document.load_page(self.current_page)
+                text = page.get_text()
+            elif type(self.current_document) == docx.Document:
+                text = ""
+                for paragraph in self.current_document.paragraphs:
+                    text += paragraph.text + "\n"
+
+            # Check if there is text to speak
+            if text:
+                tts = gTTS(text=text, lang='en')  # You can specify the desired language
+                tts.save("page_text.mp3")
+                self.paplay_process = subprocess.Popen(["paplay", "page_text.mp3"])
+                self.audio_playing = True
+                self.text_to_speech_converting = False
+                self.status_label.setText("Playing Text-to-Speech...")
+                self.play_text_action.setText("Stop Text-to-Speech")
+                self.pause_text_action.setEnabled(True)
+                self.stop_text_action.setEnabled(True)
+            else:
+                self.status_label.setText("No text found or text extraction failed.")
+
+    def pause_audio(self):
+        if self.audio_playing:
+            if self.paplay_process:
+                self.paplay_process.send_signal(subprocess.signal.SIGSTOP)
+            self.audio_playing = False
+            self.text_to_speech_converting = False
+            self.status_label.setText("Audio Paused")
+            self.play_text_action.setText("Play Text-to-Speech")
+            self.pause_text_action.setText("Resume Audio")
+            self.stop_text_action.setEnabled(True)
+
+    def stop_audio(self):
+        if self.audio_playing or self.text_to_speech_converting:
+            if self.paplay_process:
+                self.paplay_process.terminate()
+            self.audio_playing = False
+            self.text_to_speech_converting = False
+            self.status_label.setText("Audio Stopped")
+            self.play_text_action.setText("Play Text-to-Speech")
+            self.pause_text_action.setText("Pause Audio")
+            self.stop_text_action.setEnabled(False)
+
+def main():
+    app = QApplication(sys.argv)
+    window = PDFReaderApp()
+    window.show()
+    sys.exit(app.exec_())
+
+if __name__ == '__main__':
+    main()

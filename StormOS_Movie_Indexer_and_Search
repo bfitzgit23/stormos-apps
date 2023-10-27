@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import json
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QLineEdit, QListWidget, QPushButton, QFileDialog, QMessageBox
+from PyQt5.QtCore import Qt
+from subprocess import run, Popen, PIPE
+
+class MovieIndexerApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Movie Indexer and Search")
+        self.setGeometry(100, 100, 800, 600)
+
+        central_widget = QWidget()
+        layout = QVBoxLayout()
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search for movies...")
+        self.search_input.textChanged.connect(self.search_movies)
+
+        self.results_list = QListWidget()
+        self.results_list.itemActivated.connect(self.launch_movie)
+        
+        self.add_directory_button = QPushButton("Add Directory")
+        self.add_directory_button.clicked.connect(self.add_directory)
+
+        self.remove_directory_button = QPushButton("Remove Directory")
+        self.remove_directory_button.clicked.connect(self.remove_directory)
+
+        layout.addWidget(self.search_input)
+        layout.addWidget(self.results_list)
+        layout.addWidget(self.add_directory_button)
+        layout.addWidget(self.remove_directory_button)
+
+        central_widget.setLayout(layout)
+        self.setCentralWidget(central_widget)
+
+        # Initialize the list of directories to search
+        self.directories_to_search = self.load_directories()
+        self.last_clicked_item = None  # Track the last clicked item
+
+
+    def load_directories(self):
+        try:
+            with open("directories.json", "r") as file:
+                return json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {"Default": os.path.expanduser("~/Videos")}
+
+    def save_directories(self):
+        with open("directories.json", "w") as file:
+            json.dump(self.directories_to_search, file)
+
+
+
+
+
+    def launch_movie(self, item):
+        selected_text = item.text()
+        if selected_text and item != self.last_clicked_item:
+            directory_name, movie_path = selected_text.split(": ", 1)
+            run(["xdg-open", movie_path])
+            self.last_clicked_item = item  # Update the last clicked item
+
+    # ...
+
+    def search_movies(self):
+        query = self.search_input.text().lower()
+        self.results_list.clear()
+
+        for directory_name, directory_path in self.directories_to_search.items():
+            for root, dirs, files in os.walk(directory_path):
+                for file in files:
+                    if query in file.lower() and file.endswith((".mp4", ".mkv", ".avi")):
+                        self.results_list.addItem(f"{directory_name}: {os.path.join(root, file)}")
+
+        # Reset the last clicked item when a new search is initiated
+        self.last_clicked_item = None
+
+    def add_directory(self):
+        options = QFileDialog.Options()
+        options |= QFileDialog.ReadOnly
+        new_directory = QFileDialog.getExistingDirectory(self, "Add Directory to Search", options=options)
+
+        if new_directory:
+            directory_name, _ = os.path.split(new_directory)
+            self.directories_to_search[directory_name] = new_directory
+            self.save_directories()
+            self.search_movies()
+
+    def remove_directory(self):
+        selected_item = self.results_list.currentItem()
+        if selected_item:
+            selected_text = selected_item.text()
+            colon_index = selected_text.find(": ")
+            if colon_index != -1:
+                directory_name = selected_text[:colon_index]
+            
+                # Remove the directory associated with the selected result
+                if directory_name in self.directories_to_search:
+                    del self.directories_to_search[directory_name]
+                self.save_directories()
+                self.search_movies()
+
+def main():
+    app = QApplication(sys.argv)
+    window = MovieIndexerApp()
+    window.show()
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()

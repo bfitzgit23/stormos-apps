@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import subprocess
+import pyperclip
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QLabel,
+    QProgressBar,
+    QMessageBox,
+    QFileDialog,
+    QComboBox,
+    QCheckBox,
+    QHBoxLayout,
+    QTextEdit,
+    QAction,
+)
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer
+
+def is_youtube_url(text):
+    return text.startswith("https://www.youtube.com")
+
+class DownloaderThread(QThread):
+    progress_signal = pyqtSignal(int)
+    info_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal()
+
+    def __init__(self, url, save_path, formats=None):
+        super().__init__()
+        self.url = url
+        self.save_path = save_path
+        self.formats = formats
+        self.stopped = False
+
+    def run(self):
+        download_info = ""
+        mp4_process = None
+        mp3_process = None
+
+        if "mp4" in self.formats:
+            mp4_cmd = ["yt-dlp", "--output", self.save_path + ".mp4", "--format", "best[ext=mp4]", self.url]
+            mp4_process = subprocess.Popen(
+                mp4_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
+            )
+
+        if "mp3" in self.formats:
+            mp3_cmd = ["yt-dlp", "--output", self.save_path + ".mp3", "--format", "bestaudio[ext=mp3]/best", self.url]
+            mp3_process = subprocess.Popen(
+                mp3_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
+            )
+
+        while not self.stopped:
+            if mp4_process:
+                mp4_output = mp4_process.stdout.readline()
+                if not mp4_output and mp4_process.poll() is not None:
+                    mp4_process.stdout.close()
+                    mp4_process = None
+                if "downloading" in mp4_output.lower():
+                    try:
+                        progress_percentage = get_progress_percentage(mp4_output)
+                        if progress_percentage is not None:
+                            self.progress_signal.emit(progress_percentage)
+                        download_info = f"Progress (MP4): {progress_percentage}%"
+                    except (ValueError, IndexError):
+                        pass
+                elif "size" in mp4_output.lower():
+                    download_info = f"{download_info}\n{mp4_output.strip()}"
+                elif "ETA" in mp4_output:
+                    download_info = f"{download_info}\n{mp4_output.strip()}"
+                self.info_signal.emit(download_info)
+
+            if mp3_process:
+                mp3_output = mp3_process.stdout.readline()
+                if not mp3_output and mp3_process.poll() is not None:
+                    mp3_process.stdout.close()
+                    mp3_process = None
+                if "downloading" in mp3_output.lower():
+                    try:
+                        progress_percentage = get_progress_percentage(mp3_output)
+                        if progress_percentage is not None:
+                            self.progress_signal.emit(progress_percentage)
+                        download_info = f"Progress (MP3): {progress_percentage}%"
+                    except (ValueError, IndexError):
+                        pass
+                elif "size" in mp3_output.lower():
+                    download_info = f"{download_info}\n{mp3_output.strip()}"
+                elif "ETA" in mp3_output:
+                    download_info = f"{download_info}\n{mp3_output.strip()}"
+                self.info_signal.emit(download_info)
+
+        self.progress_signal.emit(100)
+        self.info_signal.emit("Download complete.")
+        self.finished_signal.emit()
+
+    def stop(self):
+        self.stopped = True
+
+def get_progress_percentage(output):
+    words = output.split()
+    for word in words:
+        if word.endswith("%"):
+            return int(word.strip('%'))
+    return None
+
+class YouTubeDownloaderApp(QMainWindow):
+    def __init__(self):
+        QWidget.__init__(self)
+        self.initUI()
+        self.downloader_thread = None
+
+        self.clipboard_timer = QTimer(self)
+        self.clipboard_timer.timeout.connect(self.check_clipboard)
+        self.clipboard_timer.start(1000)
+
+    def check_clipboard(self):
+        clipboard_data = pyperclip.paste()
+        if is_youtube_url(clipboard_data):
+            self.url_input.setText(clipboard_data)
+
+    def initUI(self):
+        self.setWindowTitle("StormOS YouTube Downloader")
+        self.setGeometry(100, 100, 400, 300)
+
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+
+        layout = QVBoxLayout()
+
+        self.url_input = QLineEdit(self)
+        self.url_input.setPlaceholderText("Enter YouTube URL")
+        layout.addWidget(self.url_input)
+
+        self.save_path_combo = QComboBox(self)
+        self.save_path_combo.addItems(["Video", "Music", "Downloads"])
+        layout.addWidget(self.save_path_combo)
+
+        format_layout = QHBoxLayout()
+        self.mp3_checkbox = QCheckBox("MP3", self)
+        self.mp4_checkbox = QCheckBox("MP4", self)
+        layout.addWidget(self.mp3_checkbox)
+        layout.addWidget(self.mp4_checkbox)
+        format_layout.addWidget(self.mp3_checkbox)
+        format_layout.addWidget(self.mp4_checkbox)
+        layout.addLayout(format_layout)
+
+        self.best_quality_checkbox = QCheckBox("Best Quality", self)
+        layout.addWidget(self.best_quality_checkbox)
+
+        self.progress_widget = ProgressWidget()
+        layout.addWidget(self.progress_widget)
+
+        self.info_widget = InfoWidget()
+        layout.addWidget(self.info_widget)
+
+        main_widget.setLayout(layout)
+
+        self.create_actions()
+        self.create_toolbar()
+
+    def create_actions(self):
+        self.download_action = QAction("Download", self)
+        self.download_action.triggered.connect(self.start_download)
+
+    def create_toolbar(self):
+        toolbar = self.addToolBar("Download")
+        toolbar.addAction(self.download_action)
+
+    def start_download(self):
+        if self.downloader_thread and self.downloader_thread.isRunning():
+            QMessageBox.warning(self, "Warning", "A download is already in progress.")
+            return
+
+        url = self.url_input.text()
+        selected_path = self.save_path_combo.currentText()
+        save_path = os.path.expanduser("~")
+
+        if selected_path == "Video":
+            save_path = os.path.join(save_path, "Videos")
+        elif selected_path == "Music":
+            save_path = os.path.join(save_path, "Music")
+        elif selected_path == "Downloads":
+            save_path = os.path.join(save_path, "Downloads")
+
+        os.makedirs(save_path, exist_ok=True)
+
+        formats = []
+        if self.mp3_checkbox.isChecked():
+            formats.append("mp3")
+        if self.mp4_checkbox.isChecked():
+            formats.append("mp4")
+
+        best_quality = self.best_quality_checkbox.isChecked()
+        format_extensions = "_".join(formats)
+
+        self.downloader_thread = DownloaderThread(url, os.path.join(save_path, f"%(title)s_{format_extensions}"), formats)
+
+        self.downloader_thread.progress_signal.connect(self.progress_widget.update_progress)
+        self.downloader_thread.info_signal.connect(self.info_widget.append_info)
+        self.downloader_thread.finished_signal.connect(self.download_finished)
+        self.downloader_thread.start()
+
+    def download_finished(self):
+        self.download_action.setEnabled(True)
+        if self.downloader_thread:
+            self.downloader_thread.stop()
+            self.downloader_thread.wait()
+        self.downloader_thread = None
+
+class ProgressWidget(QWidget):
+    def __init__(self):
+        QWidget.__init__(self)
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+        self.progress_label = QLabel("Progress:")
+        layout.addWidget(self.progress_label)
+
+        self.progress_bar = QProgressBar(self)
+        layout.addWidget(self.progress_bar)
+
+        self.setLayout(layout)
+
+    def update_progress(self, progress):
+        self.progress_bar.setValue(progress)
+        self.progress_label.setText(f"Progress: {progress}%")
+
+class InfoWidget(QTextEdit):
+    def __init__(self):
+        QWidget.__init__(self)
+        self.setReadOnly(True)
+        self.setMaximumHeight(100)
+
+    def append_info(self, info):
+        self.append(info)
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    downloader = YouTubeDownloaderApp()
+    downloader.show()
+    sys.exit(app.exec_())
