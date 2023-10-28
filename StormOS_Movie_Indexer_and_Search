@@ -58,13 +58,12 @@ class MovieIndexerApp(QMainWindow):
 
 
     def launch_movie(self, item):
+        self.last_clicked_item = None  # Clear the last clicked item
         selected_text = item.text()
-        if selected_text and item != self.last_clicked_item:
+        if selected_text:
             directory_name, movie_path = selected_text.split(": ", 1)
             run(["xdg-open", movie_path])
-            self.last_clicked_item = item  # Update the last clicked item
 
-    # ...
 
     def search_movies(self):
         query = self.search_input.text().lower()
