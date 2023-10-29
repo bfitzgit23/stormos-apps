@@ -40,59 +40,37 @@ class DownloaderThread(QThread):
 
     def run(self):
         download_info = ""
-        mp4_process = None
-        mp3_process = None
+        process = None
 
-        if "mp4" in self.formats:
-            mp4_cmd = ["yt-dlp", "--output", self.save_path + ".mp4", "--format", "best[ext=mp4]", self.url]
-            mp4_process = subprocess.Popen(
-                mp4_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
-            )
+        cmd = ["yt-dlp", "--output", self.save_path, "--format", "best[ext=mp4]/bestaudio[ext=mp3]/best", self.url]
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
+        )
 
-        if "mp3" in self.formats:
-            mp3_cmd = ["yt-dlp", "--output", self.save_path + ".mp3", "--format", "bestaudio[ext=mp3]/best", self.url]
-            mp3_process = subprocess.Popen(
-                mp3_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
-            )
+        while not self.stopped and process:
+            try:
+                output = process.stdout.readline()
+            except Exception as e:
+                print(f"Error reading output: {e}")
+                output = ""
 
-        while not self.stopped:
-            if mp4_process:
-                mp4_output = mp4_process.stdout.readline()
-                if not mp4_output and mp4_process.poll() is not None:
-                    mp4_process.stdout.close()
-                    mp4_process = None
-                if "downloading" in mp4_output.lower():
-                    try:
-                        progress_percentage = get_progress_percentage(mp4_output)
-                        if progress_percentage is not None:
-                            self.progress_signal.emit(progress_percentage)
-                        download_info = f"Progress (MP4): {progress_percentage}%"
-                    except (ValueError, IndexError):
-                        pass
-                elif "size" in mp4_output.lower():
-                    download_info = f"{download_info}\n{mp4_output.strip()}"
-                elif "ETA" in mp4_output:
-                    download_info = f"{download_info}\n{mp4_output.strip()}"
-                self.info_signal.emit(download_info)
+            if not output and process.poll() is not None:
+                process.stdout.close()
+                process = None
+            if "downloading" in output.lower():
+                try:
+                    progress_percentage = get_progress_percentage(output)
+                    if progress_percentage is not None:
+                        self.progress_signal.emit(progress_percentage)
+                    download_info = f"Progress: {progress_percentage}%"
+                except (ValueError, IndexError):
+                    pass
+            elif "size" in output.lower():
+                download_info = f"{download_info}\n{output.strip()}"
+            elif "ETA" in output:
+                download_info = f"{download_info}\n{output.strip()}"
+            self.info_signal.emit(download_info)
 
-            if mp3_process:
-                mp3_output = mp3_process.stdout.readline()
-                if not mp3_output and mp3_process.poll() is not None:
-                    mp3_process.stdout.close()
-                    mp3_process = None
-                if "downloading" in mp3_output.lower():
-                    try:
-                        progress_percentage = get_progress_percentage(mp3_output)
-                        if progress_percentage is not None:
-                            self.progress_signal.emit(progress_percentage)
-                        download_info = f"Progress (MP3): {progress_percentage}%"
-                    except (ValueError, IndexError):
-                        pass
-                elif "size" in mp3_output.lower():
-                    download_info = f"{download_info}\n{mp3_output.strip()}"
-                elif "ETA" in mp3_output:
-                    download_info = f"{download_info}\n{mp3_output.strip()}"
-                self.info_signal.emit(download_info)
 
         self.progress_signal.emit(100)
         self.info_signal.emit("Download complete.")
@@ -189,28 +167,24 @@ class YouTubeDownloaderApp(QMainWindow):
 
         os.makedirs(save_path, exist_ok=True)
 
-        formats = []
-        if self.mp3_checkbox.isChecked():
-            formats.append("mp3")
-        if self.mp4_checkbox.isChecked():
-            formats.append("mp4")
+        self.download_action.setEnabled(False)  # Disable the download action while downloading
 
-        best_quality = self.best_quality_checkbox.isChecked()
-        format_extensions = "_".join(formats)
-
-        self.downloader_thread = DownloaderThread(url, os.path.join(save_path, f"%(title)s_{format_extensions}"), formats)
+        self.downloader_thread = DownloaderThread(url, os.path.join(save_path, f"%(title)s"), formats=["mp4", "mp3"])
 
         self.downloader_thread.progress_signal.connect(self.progress_widget.update_progress)
         self.downloader_thread.info_signal.connect(self.info_widget.append_info)
         self.downloader_thread.finished_signal.connect(self.download_finished)
         self.downloader_thread.start()
 
+
+
     def download_finished(self):
-        self.download_action.setEnabled(True)
+        self.download_action.setEnabled(True)  # Re-enable the download action
         if self.downloader_thread:
             self.downloader_thread.stop()
             self.downloader_thread.wait()
         self.downloader_thread = None
+
 
 class ProgressWidget(QWidget):
     def __init__(self):
