@@ -1,28 +1,73 @@
 #!/usr/bin/env python3
 
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QFileDialog, QListWidget, QListWidgetItem, QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QFileDialog, QListWidget, QListWidgetItem, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtWidgets import QAbstractItemView
+
+
+class CustomSlider(QSlider):
+    # Signal to indicate slider value change by user
+    valueChangedByUser = pyqtSignal(int)
+
+    def __init__(self, orientation):
+        super().__init__(orientation)
+        self.dragging = False
+
+    def mousePressEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            click_position = event.pos().x()
+            self.setValue(self.minimum() + (self.maximum() - self.minimum()) * click_position / self.width())
+            self.dragging = True
+            self.valueChangedByUser.emit(self.value())
+
+    def mouseMoveEvent(self, event):
+        if self.dragging and event.buttons() & Qt.LeftButton:
+            click_position = event.pos().x()
+            self.setValue(self.minimum() + (self.maximum() - self.minimum()) * click_position / self.width())
+            self.valueChangedByUser.emit(self.value())
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.dragging = False
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y() / 120  # Divide by 120 to get the number of steps
+        new_value = self.value() - delta  # Adjust the slider value
+        new_value = max(self.minimum(), min(self.maximum(), new_value))  # Ensure it's within bounds
+        self.setValue(new_value)
+        self.valueChangedByUser.emit(new_value)
+        event.accept()
 
 class MusicPlayerGUI(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # Initialize the GUI
-        self.initUI()
-
         # Flags for media playback control
         self.is_playing = False
         self.current_music_file = None
-        self.media_player = QMediaPlayer(self)  # Initialize QMediaPlayer instance
+
+        # Initialize QMediaPlayer instance
+        self.media_player = QMediaPlayer(self)
         self.media_player.positionChanged.connect(self.update_position)
         self.media_player.mediaStatusChanged.connect(self.media_status_changed)
+        self.media_player.stateChanged.connect(self.handle_media_state_changed)
+
+        # Initialize the GUI
+        self.initUI()
 
         # Check if command-line arguments were provided
         if len(sys.argv) > 1:
             self.load_music_from_command_line()
+
+        # Create a QTimer for checking and playing the next track
+        self.track_timer = QTimer(self)
+        self.track_timer.timeout.connect(self.play_next_track)
+
 
     def initUI(self):
         self.setWindowTitle("StormOS Music Player")
@@ -31,7 +76,7 @@ class MusicPlayerGUI(QMainWindow):
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
 
-        # Create a vertical layout for central widget
+        # Create a vertical layout for the central widget
         layout = QVBoxLayout(central_widget)
         layout.setAlignment(Qt.AlignCenter)
 
@@ -82,31 +127,87 @@ class MusicPlayerGUI(QMainWindow):
         top_button_layout2.addWidget(stop_button)
 
         # Remove button
-        remove_button = QPushButton("Remove", self)
-        remove_button.setIcon(QIcon.fromTheme('edit-delete'))
-        remove_button.clicked.connect(self.remove_selected)
-        top_button_layout2.addWidget(remove_button)
+        #remove_button = QPushButton("Remove", self)
+        #remove_button.setIcon(QIcon.fromTheme('edit-delete'))
+        #remove_button.clicked.connect(self.remove_selected)
+        #top_button_layout2.addWidget(remove_button)
 
         layout.addLayout(top_button_layout1)
         layout.addLayout(top_button_layout2)
 
+        # Create a Remove button
+        self.remove_button = QPushButton("Remove", self)
+        self.remove_button.setIcon(QIcon.fromTheme('edit-delete'))
+        self.remove_button.clicked.connect(self.remove_selected)
+        top_button_layout2.addWidget(self.remove_button)
+
+
         # Playlist
         self.playlist_widget = QListWidget(self)
+        self.playlist_widget.setSelectionMode(QAbstractItemView.NoSelection)  # Set selection mode
         layout.addWidget(self.playlist_widget)
 
-        # Labels to display song time information
-        self.current_time_label = QLabel("0:00", self)
-        layout.addWidget(self.current_time_label)
 
-        self.total_time_label = QLabel("0:00", self)
-        layout.addWidget(self.total_time_label)
+        # Add the code to print playlist items and their song paths
+        for index in range(self.playlist_widget.count()):
+            item = self.playlist_widget.item(index)
+            song_path = item.data(Qt.UserRole)
+            print(f"Playlist Item {index + 1}: {song_path}")
 
-        # Initialize time variables
-        self.current_time = 0
-        self.total_time = 0
+
+        # Create a horizontal layout for the seek bar and remaining time (row 3)
+        bottom_button_layout = QHBoxLayout()
+
+        # Add a time label to the left of the seek slider
+        self.time_label = QLabel("0:00", self)
+        bottom_button_layout.addWidget(self.time_label)
+
+        # Seek slider
+        self.seek_slider = QSlider(Qt.Horizontal)
+        self.seek_slider.setTracking(False)  # Disable continuous tracking
+        self.seek_slider.setSingleStep(1000)  # Set the step to 1 second (1000 milliseconds)
+        bottom_button_layout.addWidget(self.seek_slider)
+
+        # Connect the seek slider to the media player's position
+        self.seek_slider.sliderPressed.connect(self.slider_pressed)
+        self.seek_slider.sliderReleased.connect(self.seek_to_position)
+        self.seek_slider.valueChanged.connect(self.slider_value_changed)
+
+        # Remaining time label
+        self.remaining_time_label = QLabel("0:00", self)
+        bottom_button_layout.addWidget(self.remaining_time_label)
+
+        layout.addLayout(bottom_button_layout)
+
+        # Connect the seek slider to the media player
+        self.seek_slider.sliderMoved.connect(self.seek_media)
+        self.seek_slider.sliderReleased.connect(self.seek_to_position)
 
         # Connect double-click event to the playlist
         self.playlist_widget.itemDoubleClicked.connect(self.double_click_event_handler)
+
+        # ... (previous code)
+
+        # Connect media player's stateChanged signal to handle automatic transition
+        self.media_player.stateChanged.connect(self.handle_media_state_changed)
+
+        # Connect media player's mediaStatusChanged signal to handle end of media
+        self.media_player.mediaStatusChanged.connect(self.handle_media_status_changed)
+
+        # Connect single-click event to the playlist
+        #self.playlist_widget.itemClicked.connect(self.single_click_event_handler)
+
+        self.playlist_widget.itemSelectionChanged.connect(self.playlist_item_selected)
+
+        self.playlist_widget.setSelectionMode(QAbstractItemView.MultiSelection)
+
+
+
+    def single_click_event_handler(self, item):
+        song_path = item.data(Qt.UserRole)
+        self.play_song(song_path)
+
+
 
     def toggle_play_pause(self):
         if not self.current_music_file:
@@ -147,19 +248,57 @@ class MusicPlayerGUI(QMainWindow):
                     song_path = item
                     song_title = item.split('/')[-1]
                     self.add_to_playlist(song_title, song_path)
+                
+                # Play the first song in the playlist
+                if not self.current_music_file and self.playlist_widget.count() > 0:
+                    first_item = self.playlist_widget.item(0)
+                    song_path = first_item.data(Qt.UserRole)
+                    self.play_song(song_path)
+
+                # Print the list of songs in the playlist
+                for index in range(self.playlist_widget.count()):
+                    item = self.playlist_widget.item(index)
+                    song_path = item.data(Qt.UserRole)
+                    print(f"Playlist Item {index + 1}: {song_path}")
         except Exception as e:
             # Handle the exception (e.g., show an error message)
             print(f"Error loading music: {e}")
 
+
+    # Modify the update_position method to handle time in milliseconds
     def update_position(self, position):
-        self.current_time = position / 1000
-        self.total_time = self.media_player.duration() / 1000
-        self.current_time_label.setText(self.format_time(self.current_time))
-        self.total_time_label.setText(self.format_time(self.total_time))
+        self.current_time = position
+        self.total_time = self.media_player.duration()
+
+        # Update the time label with the current playback time
+        self.time_label.setText(self.format_time(self.current_time / 1000))  # Convert to seconds
+
+        # Set the maximum value of the seek slider to the total duration of the song
+        self.seek_slider.setMaximum(self.total_time)
+
+        # Set the slider value to the current position
+        self.seek_slider.setValue(self.current_time)
+
+        # Calculate and display remaining time
+        remaining_seconds = int((self.total_time - self.current_time) / 1000)  # Convert to seconds
+        self.remaining_time_label.setText(self.format_time(remaining_seconds))
+
 
     def media_status_changed(self, status):
         if status == QMediaPlayer.EndOfMedia:
             self.next_track()
+
+
+    def seek_media(self, position):
+        # Ensure the new position is within bounds
+        if position < 0:
+            position = 0
+        elif position > self.media_player.duration():
+            position = self.media_player.duration()
+
+        # Seek the media to the specified position (in seconds)
+        self.media_player.setPosition(position)
+
 
     def prev_track(self):
         current_item = self.playlist_widget.currentItem()
@@ -174,20 +313,49 @@ class MusicPlayerGUI(QMainWindow):
                 self.play_song(song_path)
 
     def next_track(self):
-        current_item = self.playlist_widget.currentItem()
-        if current_item is None:
-            current_item = self.playlist_widget.item(0)
-        else:
-            current_index = self.playlist_widget.row(current_item)
-            if current_index < self.playlist_widget.count() - 1:
-                next_item = self.playlist_widget.item(current_index + 1)
-                self.playlist_widget.setCurrentItem(next_item)
-                song_path = next_item.data(Qt.UserRole)
-                self.play_song(song_path)
+        if self.media_player.state() != QMediaPlayer.StoppedState:
+            self.media_player.stop()
+
+        # Delay the playback by a short time (e.g., 100 milliseconds)
+        QTimer.singleShot(100, self.play_next_track)
+
+    def play_next_track(self):
+        if self.media_player.state() == QMediaPlayer.StoppedState:
+            current_item = self.playlist_widget.currentItem()
+            if current_item is None:
+                current_item = self.playlist_widget.item(0)
+            else:
+                current_index = self.playlist_widget.row(current_item)
+                if current_index < self.playlist_widget.count() - 1:
+                    next_index = current_index + 1
+                    next_item = self.playlist_widget.item(next_index)
+                    song_path = next_item.data(Qt.UserRole)
+                    self.play_song(song_path)
+
+
+
+
+
 
     def seek_forward(self):
-        position = self.media_player.position() + 5000  # Seek 5 seconds forward
-        self.media_player.setPosition(position)
+        if self.media_player.state() != QMediaPlayer.PlayingState:
+            return
+
+        # Calculate the new position
+        new_position = self.media_player.position() + 5000  # Seek 5 seconds forward
+
+        # Ensure the new position does not exceed the total duration
+        if new_position > self.media_player.duration():
+            new_position = self.media_player.duration()
+
+        # Set the media player's position directly
+        self.media_player.setPosition(new_position)
+
+        # Update the slider value to match the new position
+        self.seek_slider.setValue(new_position)
+
+
+
 
     def seek_backward(self):
         position = self.media_player.position() - 5000  # Seek 5 seconds backward
@@ -196,6 +364,13 @@ class MusicPlayerGUI(QMainWindow):
     def double_click_event_handler(self, item):
         song_path = item.data(Qt.UserRole)
         self.play_song(song_path)
+
+        # Clear the selection to prevent unwanted behavior
+        self.playlist_widget.clearSelection()
+
+
+
+
 
     def load_music_from_command_line(self):
         selected_files_and_folders = sys.argv[1:]
@@ -213,31 +388,130 @@ class MusicPlayerGUI(QMainWindow):
 
     def play_song(self, song_path):
         if song_path:
+            # Stop the currently playing song if it's playing
+            if self.is_playing:
+                self.media_player.stop()
+                self.is_playing = False
+                self.play_pause_button.setText("Play")
+                self.play_pause_button.setIcon(QIcon.fromTheme('media-playback-start'))
+
             media_content = QMediaContent(QUrl.fromLocalFile(song_path))
             self.media_player.setMedia(media_content)
             self.current_music_file = song_path
+
+            # Play the new song
             self.media_player.play()
             self.play_pause_button.setText("Pause")
             self.play_pause_button.setIcon(QIcon.fromTheme('media-playback-pause'))
             self.is_playing = True
 
+            # Find the item in the playlist and select it
+            for index in range(self.playlist_widget.count()):
+                item = self.playlist_widget.item(index)
+                if item.data(Qt.UserRole) == song_path:
+                    self.playlist_widget.setCurrentItem(item)
+
+            # Start the track timer to automatically play the next track
+            self.track_timer.start(1000)  # Check every second
+
+
+
+
+
     def add_to_playlist(self, song_title, song_path):
         item = QListWidgetItem(song_title)
         item.setData(Qt.UserRole, song_path)
         self.playlist_widget.addItem(item)
+        
+        # If it's the first item in the playlist, select it
+        if self.playlist_widget.count() == 1:
+            self.playlist_widget.setCurrentItem(item)
+
+        print(f"Added to playlist: {song_title}, {song_path}")
+
+
+
 
     def format_time(self, seconds):
         minutes, seconds = divmod(int(seconds), 60)
         return f"{minutes}:{seconds:02}"
 
     def remove_selected(self):
-        selected_items = self.playlist_widget.selectedItems()
-        for item in selected_items:
-            row = self.playlist_widget.row(item)
-            self.playlist_widget.takeItem(row)
-            if item.data(Qt.UserRole) == self.current_music_file:
+        try:
+            selected_items = self.playlist_widget.selectedItems()
+            if not selected_items:
+                return
+
+            # Stop the media player if the removed item is the currently playing song
+            for item in selected_items:
+                song_path = item.data(Qt.UserRole)
+                if song_path == self.current_music_file:
+                    self.media_player.stop()
+                    self.current_music_file = None
+                    self.is_playing = False
+                    self.play_pause_button.setText("Play")
+                    self.play_pause_button.setIcon(QIcon.fromTheme('media-playback-start'))
+
+            # Remove the selected items from the playlist
+            for item in selected_items:
+                row = self.playlist_widget.row(item)
+                self.playlist_widget.takeItem(row)
+
+            # If there are no items left, reset the media player
+            if self.playlist_widget.count() == 0:
                 self.media_player.stop()
                 self.current_music_file = None
+                self.is_playing = False
+                self.play_pause_button.setText("Play")
+                self.play_pause_button.setIcon(QIcon.fromTheme('media-playback-start'))
+
+        except Exception as e:
+            print(f"Error in remove_selected: {e}")
+
+
+    # Add these functions to handle slider events
+    def slider_pressed(self):
+        # When the slider is pressed, store the current playing state
+        self.was_playing = (self.media_player.state() == QMediaPlayer.PlayingState)
+        if self.was_playing:
+            self.media_player.pause()
+
+    def slider_value_changed(self):
+        # When the slider value changes, update the time label and seek position
+        if not hasattr(self, 'was_playing'):
+            return
+
+        position = self.seek_slider.value()
+        self.time_label.setText(self.format_time(position / 1000))  # Convert to seconds
+
+    def seek_to_position(self):
+        # When the slider is released, seek to the selected position
+        if hasattr(self, 'was_playing') and self.was_playing:
+            self.media_player.setPosition(self.seek_slider.value())
+            self.media_player.play()
+            delattr(self, 'was_playing')
+        else:
+            self.media_player.setPosition(self.seek_slider.value())
+
+    def handle_media_state_changed(self, state):
+        if state == QMediaPlayer.StoppedState and self.is_playing:
+            self.next_track()
+
+
+    def handle_media_status_changed(self, status):
+        print(f"Media Status Changed: {status}")
+        if status == QMediaPlayer.EndOfMedia:
+            print("End of Media detected")
+            self.next_track()
+
+    def playlist_item_selected(self):
+        selected_items = self.playlist_widget.selectedItems()
+        if selected_items:
+            self.remove_button.setEnabled(True)
+        else:
+            self.remove_button.setDisabled(True)
+
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
@@ -245,4 +519,3 @@ if __name__ == '__main__':
     window.show()
 
     sys.exit(app.exec_())
-
