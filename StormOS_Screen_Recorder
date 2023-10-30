@@ -5,9 +5,10 @@ import sys
 import subprocess
 import cv2
 import datetime
-from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QComboBox, QCheckBox, QWidget
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QComboBox, QCheckBox
 from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QImage, QPixmap
+from screeninfo import get_monitors  # Import the get_monitors function from screeninfo
 
 class WebcamPreview(QMainWindow):
     def __init__(self):
@@ -46,6 +47,7 @@ class ScreenRecorderApp(QMainWindow):
         self.audio_sources = []  # List to store available audio sources
         self.record_desktop = False  # Flag to record the entire desktop
         self.save_as_mkv = False  # Flag to save recordings as .mkv
+        self.screen_width, self.screen_height = self.get_screen_resolution()
 
     def initUI(self):
         self.setWindowTitle("StormOS Screen Recorder")
@@ -74,6 +76,15 @@ class ScreenRecorderApp(QMainWindow):
         self.mkv_checkbox.stateChanged.connect(self.toggle_save_as_mkv)
         self.webcam_preview = WebcamPreview()
         self.webcam_preview.hide()  # Hide the webcam preview initially
+
+    def get_screen_resolution(self):
+        # Get the screen resolution using screeninfo library
+        monitors = get_monitors()
+        if monitors:
+            primary_monitor = monitors[0]
+            return primary_monitor.width, primary_monitor.height
+        else:
+            return 1920, 1080  # Default resolution if no monitors are detected
 
     def refresh_audio_sources(self):
         try:
@@ -108,7 +119,7 @@ class ScreenRecorderApp(QMainWindow):
                 if self.record_desktop:
                     # Capture the entire desktop
                     video_input = ":0.0"
-                    video_size = "1920x1080"  # Adjust to your screen size
+                    video_size = f"{self.screen_width}x{self.screen_height}"  # Use detected screen resolution
                 else:
                     # Use xwininfo to get the active window's geometry
                     window_info = subprocess.check_output(["xwininfo", "-frame"]).decode("utf-8")
