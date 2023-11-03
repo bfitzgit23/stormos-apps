@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+
+import sys
+import subprocess
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QFileDialog, QLabel, QLineEdit, QTextEdit, QComboBox
+from PyQt5.QtCore import QThread, pyqtSignal
+import os
+
+class ConversionThread(QThread):
+    update_progress = pyqtSignal(float, str)
+    conversion_completed = pyqtSignal()
+    conversion_error = pyqtSignal(bool, str)  # Signal to indicate success or failure
+
+    def __init__(self, input_file, output_file, input_format, output_format):
+        super().__init__()
+        self.input_file = input_file
+        self.output_file = output_file
+        self.input_format = input_format
+        self.output_format = output_format
+
+    def run(self):
+        try:
+            command = [
+                "HandBrakeCLI",
+                "-i", self.input_file,
+                "-o", self.output_file,
+                "-e", "x264",  # Video codec (default: x264)
+                "-q", "20",   # Video quality (adjust as needed)
+                "-B", "128",  # Audio bitrate (adjust as needed)
+                "--verbose", "2"  # Enable verbose output
+            ]
+
+            # Add format-specific options based on user selection
+            if self.input_format == "MKV" and self.output_format == "WebM":
+                # Example: MKV to WebM
+                command.extend(["-e", "VP9"])  # Video codec for WebM format
+            elif self.input_format == "MP4" and self.output_format == "MKV":
+                # Example: MP4 to MKV
+                command.extend(["-e", "x264"])  # Video codec for MKV format
+            # Add more format conversion options as needed
+
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+
+            success_flag = False  # Flag to track successful completion
+
+            while True:
+                line = process.stdout.readline()
+                if not line:
+                    break
+
+                progress_str = line.split("%")[0].strip()
+                try:
+                    progress = float(progress_str)
+                except ValueError:
+                    progress = -1
+
+                self.update_progress.emit(progress, line.strip())
+
+                # Check for successful completion message
+                if "Encode done!" in line:
+                    success_flag = True
+
+            process.wait()
+            if process.returncode != 0 or not success_flag:
+                self.conversion_error.emit(True, "Conversion failed")
+            else:
+                self.conversion_completed.emit()
+        except Exception as e:
+            self.conversion_error.emit(True, f"An error occurred: {str(e)}")
+
+class MediaConverter(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
+
+    def initUI(self):
+        self.setGeometry(100, 100, 600, 400)
+        self.setWindowTitle("StormOS_Video_Converter")
+
+        self.inputLabel = QLabel("Input File:", self)
+        self.inputLabel.setGeometry(20, 20, 100, 30)
+
+        self.outputLabel = QLabel("Output File:", self)
+        self.outputLabel.setGeometry(20, 60, 100, 30)
+
+        self.inputFormatLabel = QLabel("Input Format:", self)
+        self.inputFormatLabel.setGeometry(20, 100, 100, 30)
+
+        self.outputFormatLabel = QLabel("Output Format:", self)
+        self.outputFormatLabel.setGeometry(20, 140, 100, 30)
+
+        self.inputFileLineEdit = QLineEdit(self)
+        self.inputFileLineEdit.setGeometry(120, 20, 350, 30)
+
+        self.outputFileLineEdit = QLineEdit(self)
+        self.outputFileLineEdit.setGeometry(120, 60, 350, 30)
+
+        self.inputFormatComboBox = QComboBox(self)
+        self.inputFormatComboBox.setGeometry(120, 100, 100, 30)
+        self.inputFormatComboBox.addItems(["MKV", "MP4", "TS"]) 
+        
+        self.outputFormatComboBox = QComboBox(self)
+        self.outputFormatComboBox.setGeometry(120, 140, 100, 30)
+        self.outputFormatComboBox.addItems(["MKV", "WebM", "MP4"])  # Add "MP4" to the output formats
+
+        # Arrange buttons horizontally
+        button_width = 100
+        button_height = 30
+        button_spacing = 10
+
+        x_start = 490
+        y_start = 20
+
+        self.browseInputButton = QPushButton("Browse", self)
+        self.browseInputButton.setGeometry(x_start, y_start, button_width, button_height)
+        self.browseInputButton.clicked.connect(self.browseInputFile)
+
+        y_start += button_height + button_spacing
+        self.browseOutputButton = QPushButton("Browse", self)
+        self.browseOutputButton.setGeometry(x_start, y_start, button_width, button_height)
+        self.browseOutputButton.clicked.connect(self.browseOutputFile)
+
+        y_start += button_height + button_spacing
+        self.convertButton = QPushButton("Convert", self)
+        self.convertButton.setGeometry(x_start, y_start, button_width, button_height)
+        self.convertButton.clicked.connect(self.convertMedia)
+
+        y_start += button_height + button_spacing
+        self.stopButton = QPushButton("Stop", self)
+        self.stopButton.setGeometry(x_start, y_start, button_width, button_height)
+        self.stopButton.setEnabled(False)
+        self.stopButton.clicked.connect(self.stopConversion)
+
+        y_start += button_height + button_spacing
+        self.resetButton = QPushButton("Reset", self)
+        self.resetButton.setGeometry(x_start, y_start, button_width, button_height)
+        self.resetButton.setEnabled(False)
+        self.resetButton.clicked.connect(self.resetConversion)
+
+        self.percentageLabel = QLabel("", self)
+        self.percentageLabel.setGeometry(20, 180, 300, 20)
+
+        self.logText = QTextEdit(self)
+        self.logText.setGeometry(20, 220, 560, 160)
+
+    def browseInputFile(self):
+        options = QFileDialog.Options()
+        options |= QFileDialog.ReadOnly
+        input_file, _ = QFileDialog.getOpenFileName(self, "Select Input File", "", "Video Files (*.mkv *.mp4);;All Files (*)", options=options)
+        self.inputFileLineEdit.setText(input_file)
+        self.detectInputFormat()  # Automatically detect and set the input format
+
+    def browseOutputFile(self):
+        options = QFileDialog.Options()
+        options |= QFileDialog.ReadOnly
+
+        output_format = self.outputFormatComboBox.currentText()
+        file_filter = ""
+
+        if output_format == "MKV":
+            file_filter = "MKV Files (*.mkv);;All Files (*)"
+        elif output_format == "WebM":
+            file_filter = "WebM Files (*.webm);;All Files (*)"
+        elif output_format == "MP4":
+            file_filter = "MP4 Files (*.mp4);;All Files (*)"
+
+        output_file, _ = QFileDialog.getSaveFileName(self, "Select Output File", "", file_filter, options=options)
+
+        if output_file:
+            # Automatically append the appropriate extension based on the selected format
+            if output_format == "MKV" and not output_file.lower().endswith(".mkv"):
+                output_file += ".mkv"
+            elif output_format == "WebM" and not output_file.lower().endswith(".webm"):
+                output_file += ".webm"
+            elif output_format == "MP4" and not output_file.lower().endswith(".mp4"):
+                output_file += ".mp4"
+
+            self.outputFileLineEdit.setText(output_file)
+
+    def convertMedia(self):
+        input_file = self.inputFileLineEdit.text()
+        output_file = self.outputFileLineEdit.text()
+        input_format = self.inputFormatComboBox.currentText()
+        output_format = self.outputFormatComboBox.currentText()
+
+        if not input_file:
+            print("Please select an input file.")
+            return
+
+        if not output_file:
+            print("Please select an output file.")
+            return
+
+        # Disable the "Convert" button and enable the "Stop" button
+        self.convertButton.setEnabled(False)
+        self.stopButton.setEnabled(True)
+        self.resetButton.setEnabled(False)
+
+        # Create a thread for the conversion process
+        self.conversion_thread = ConversionThread(input_file, output_file, input_format, output_format)
+        self.conversion_thread.update_progress.connect(self.updateProgress)
+        self.conversion_thread.conversion_completed.connect(self.conversionCompleted)
+        self.conversion_thread.conversion_error.connect(self.conversionError)
+        self.conversion_thread.start()
+        self.percentageLabel.setText("Conversion in progress...")
+
+    def stopConversion(self):
+        if hasattr(self, 'conversion_thread') and self.conversion_thread.isRunning():
+            self.conversion_thread.terminate()
+            self.percentageLabel.setText("Conversion stopped")
+            self.resetButton.setEnabled(True)
+
+    def resetConversion(self):
+        # Enable the "Convert" button and disable the "Stop" and "Reset" buttons
+        self.convertButton.setEnabled(True)
+        self.stopButton.setEnabled(False)
+        self.resetButton.setEnabled(False)
+        self.percentageLabel.setText("")  # Clear the progress label
+        self.logText.clear()  # Clear the log text
+
+    def updateProgress(self, progress, line):
+        if progress == -1:
+            self.percentageLabel.setText("Error: Conversion failed")
+        else:
+            self.percentageLabel.setText(f"Progress: {progress:.2f}%")
+
+        self.logText.append(line)
+
+    def conversionCompleted(self):
+        # Enable the "Convert" button and disable the "Stop" and "Reset" buttons
+        self.convertButton.setEnabled(True)
+        self.stopButton.setEnabled(False)
+        self.resetButton.setEnabled(False)
+        self.percentageLabel.setText("Conversion completed successfully")
+
+    def conversionError(self, failed, error_message):
+        # Enable the "Convert" button and disable the "Stop" and "Reset" buttons
+        self.convertButton.setEnabled(True)
+        self.stopButton.setEnabled(False)
+        self.resetButton.setEnabled(False)
+        
+        if failed:
+            self.percentageLabel.setText(error_message)
+        else:
+            self.percentageLabel.setText("Conversion completed successfully")
+
+    def detectInputFormat(self):
+        # Get the selected input file path
+        input_file = self.inputFileLineEdit.text()
+
+        # Determine the input format based on the file extension
+        if input_file.lower().endswith(".mkv"):
+            self.inputFormatComboBox.setCurrentText("MKV")
+        elif input_file.lower().endswith(".mp4"):
+            self.inputFormatComboBox.setCurrentText("MP4")
+        # Add more format detection based on file extensions as needed
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MediaConverter()
+    window.show()
+    sys.exit(app.exec_())
