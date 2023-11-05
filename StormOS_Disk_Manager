@@ -1,0 +1,415 @@
+#!/usr/bin/python3
+
+import send2trash
+import sys
+import os
+import psutil
+import shutil
+import subprocess
+import matplotlib.pyplot as plt
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QTreeView, QFileSystemModel, QVBoxLayout, QPushButton,
+    QWidget, QFileDialog, QLabel, QTextEdit, QDialog, QMenu, QAction, QLineEdit,
+    QHBoxLayout
+)
+from PyQt5.QtCore import Qt, QModelIndex
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+from PyQt5.QtGui import QIcon
+from PyQt5.QtWidgets import QStyle
+
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QVBoxLayout, QPushButton, \
+    QWidget, QFileDialog, QLabel, QTextEdit, QDialog, QMenu, QAction, QLineEdit, QHBoxLayout, QInputDialog, QMessageBox
+from send2trash import send2trash  # for moving files to the trash bin
+
+# Define the path to the trash directory (Linux)
+trash_dir = os.path.expanduser("~/.local/share/Trash/files")
+
+
+class NavigationPanel(QWidget):
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.back_history = []
+        self.forward_history = []
+        self.init_ui()
+
+    def init_ui(self):
+        # Create navigation controls (e.g., back, forward buttons, path input field)
+        self.back_button = QPushButton(QIcon.fromTheme("go-previous"), "Back", self)
+        self.forward_button = QPushButton(QIcon.fromTheme("go-next"), "Forward", self)
+        self.path_input = QLineEdit(self)
+        self.go_button = QPushButton(QIcon.fromTheme("go-jump"), "Go", self)
+        
+        # Create cut, copy, and paste buttons
+        #self.cut_button = QPushButton(QIcon.fromTheme("edit-cut"), "Cut", self)
+        #self.copy_button = QPushButton(QIcon.fromTheme("edit-copy"), "Copy", self)
+        #self.paste_button = QPushButton(QIcon.fromTheme("edit-paste"), "Paste", self)
+        
+        # Set tooltips for buttons
+        self.back_button.setToolTip("Go Back")
+        self.forward_button.setToolTip("Go Forward")
+        self.go_button.setToolTip("Go to Path")
+        #self.cut_button.setToolTip("Cut Selected Items")
+        #self.copy_button.setToolTip("Copy Selected Items")
+        #self.paste_button.setToolTip("Paste Items")
+        
+        # Connect actions to buttons
+        self.back_button.clicked.connect(self.go_back)
+        self.forward_button.clicked.connect(self.go_forward)
+        self.go_button.clicked.connect(self.navigate_to_path)
+        
+        # Create a layout for the navigation panel
+        layout = QHBoxLayout(self)
+        layout.addWidget(self.back_button)
+        layout.addWidget(self.forward_button)
+        layout.addWidget(self.path_input)
+        layout.addWidget(self.go_button)
+        #layout.addWidget(self.cut_button)
+        #layout.addWidget(self.copy_button)
+        #layout.addWidget(self.paste_button)
+        
+        self.setLayout(layout)
+
+    def go_back(self):
+        current_path = self.main_window.selected_folder
+        parent_path = os.path.dirname(current_path)
+        if os.path.exists(parent_path):
+            self.forward_history.append(current_path)
+            self.main_window.set_current_directory(parent_path)
+
+    def go_forward(self):
+        if self.forward_history:
+            forward_path = self.forward_history.pop()
+            self.back_history.append(self.main_window.selected_folder)
+            self.main_window.set_current_directory(forward_path)
+
+    def navigate_to_path(self):
+        path = self.path_input.text()
+        if os.path.exists(path):
+            self.forward_history = []  # Clear forward history when navigating to a new path
+            self.back_history.append(self.main_window.selected_folder)
+            self.main_window.set_current_directory(path)
+        else:
+            print("Path does not exist.")
+
+class DiskSpaceAnalyzer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("StormOS Disk Space Analyzer & File Manager")
+        self.setGeometry(100, 100, 800, 600)
+
+        # Create a navigation panel and add it to the layout
+        self.navigation_panel = NavigationPanel(self)
+        self.setMenuWidget(self.navigation_panel)
+
+        # Create a file system model to populate the tree view
+        self.model = QFileSystemModel()
+        self.model.setRootPath("/")
+
+        # Create a tree view and set the model
+        self.tree_view = QTreeView(self)
+        self.tree_view.setModel(self.model)
+        self.tree_view.setRootIndex(self.model.index("/"))
+
+
+        # Set the width of the "Name" column (column 0) to a specific value, e.g., 300 pixels
+        self.tree_view.header().resizeSection(0, 300)
+
+        # Create a button to select a folder for analysis
+        self.select_folder_button = QPushButton("Select Folder", self)
+        self.select_folder_button.clicked.connect(self.select_folder)
+
+        # Create a button to analyze disk space
+        self.analyze_button = QPushButton("Analyze", self)
+        self.analyze_button.clicked.connect(self.analyze_disk_space)
+
+        # Create a central widget and layout
+        central_widget = QWidget(self)
+        layout = QVBoxLayout(central_widget)
+        layout.addWidget(self.select_folder_button)
+        layout.addWidget(self.analyze_button)
+        layout.addWidget(self.tree_view)
+
+        self.setCentralWidget(central_widget)
+
+        self.selected_folder = ""
+        self.clipboard = {"cut": [], "copy": []}
+        self.cut_mode = False
+
+    def get_drive_info(self, drive_path):
+        try:
+            drive_usage = psutil.disk_usage(drive_path)
+            total_size_gb = drive_usage.total / (1024 ** 3)  # Convert to GB
+
+            # Analyze the space used by files and folders within the drive
+            space_used_by_files = sum(
+                os.path.getsize(os.path.join(dirpath, filename))
+                for dirpath, dirnames, filenames in os.walk(drive_path)
+                for filename in filenames
+            )
+
+            free_space_gb = (total_size_gb - (space_used_by_files / (1024 ** 3)))  # Convert to GB
+
+            return drive_path, total_size_gb, free_space_gb
+        except Exception as e:
+            print(f"Error analyzing drive {drive_path}: {e}")
+            return None
+
+    def analyze_drive_space(self, drive_path):
+        drive_info = self.get_drive_info(drive_path)
+        
+        if not drive_info:
+            return
+
+        drive_labels = [drive_info[0]]  # Drive path
+        drive_sizes = [drive_info[2]]  # Free space in GB
+
+        folder_size = 0
+
+        for dirpath, dirnames, filenames in os.walk(drive_path):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                folder_size += os.path.getsize(filepath)
+
+        file_size = drive_sizes[0] * (1024 ** 3) - folder_size  # Convert to bytes
+
+        labels = [f"Folder Size: {folder_size / (1024 ** 3):.2f} GB", f"File Size: {file_size / (1024 ** 3):.2f} GB"]
+        sizes = [folder_size, file_size]
+
+        file_info = []
+
+        for dirpath, dirnames, filenames in os.walk(drive_path):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                file_size_bytes = os.path.getsize(filepath)
+                file_size_kib = file_size_bytes / 1024  # KiB
+                file_size_mib = file_size_bytes / (1024 ** 2)  # MiB
+                file_size_gib = file_size_bytes / (1024 ** 3)  # GiB
+                file_info.append(f"File: {filename}, Size: {file_size_kib:.2f} KiB / {file_size_mib:.2f} MiB / {file_size_gib:.2f} GiB")
+
+        if len(labels) == len(sizes):
+            pie_chart_dialog = PieChartDialog(labels, sizes, file_info)
+            pie_chart_dialog.exec_()
+        else:
+            print("Error: Labels and sizes must have the same length.")
+
+    def select_folder(self):
+        options = QFileDialog.Options()
+        options |= QFileDialog.ReadOnly
+        folder_path = QFileDialog.getExistingDirectory(self, "Select Folder for Analysis", options=options)
+
+        if folder_path:
+            self.selected_folder = folder_path
+
+    def analyze_disk_space(self):
+        if self.selected_folder:
+            self.analyze_drive_space(self.selected_folder)
+        else:
+            print("Please select a folder for analysis.")
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        open_action = QAction("Open", self)
+        open_action.triggered.connect(self.open_file_or_folder)
+        menu.addAction(open_action)
+
+        if self.cut_mode:
+            paste_action = QAction("Paste", self)
+            paste_action.triggered.connect(self.paste_items)
+            menu.addAction(paste_action)
+        else:
+            cut_action = QAction("Cut", self)
+            cut_action.triggered.connect(self.cut_selected_items)
+            copy_action = QAction("Copy", self)
+            copy_action.triggered.connect(self.copy_selected_items)
+            menu.addAction(cut_action)
+            menu.addAction(copy_action)
+
+        new_directory_action = QAction("New Directory", self)
+        new_directory_action.triggered.connect(self.create_new_directory)
+        new_file_action = QAction("New Blank File", self)
+        new_file_action.triggered.connect(self.create_new_blank_file)
+
+        menu.addAction(new_directory_action)
+        menu.addAction(new_file_action)
+
+        # Add options for removing directories and deleting files
+        delete_action = QAction("Delete", self)
+        delete_action.triggered.connect(self.delete_selected_items)
+        menu.addAction(delete_action)
+
+        menu.exec_(event.globalPos())
+
+    def open_file_or_folder(self):
+        selected_index = self.tree_view.selectionModel().currentIndex()
+        selected_path = self.model.filePath(selected_index)
+        if os.path.isdir(selected_path):
+            self.set_current_directory(selected_path)
+        elif os.path.isfile(selected_path):
+            self.open_with_default_app(selected_path)
+
+    def open_with_default_app(self, file_path):
+        try:
+            subprocess.Popen(["xdg-open", file_path])
+        except Exception as e:
+            print(f"Error opening file {file_path}: {e}")
+
+    def cut_selected_items(self):
+        selected_indices = self.tree_view.selectionModel().selectedIndexes()
+        self.clipboard["cut"] = [self.model.filePath(index) for index in selected_indices]
+        self.clipboard["copy"] = []
+        self.cut_mode = True
+
+    def copy_selected_items(self):
+        selected_indices = self.tree_view.selectionModel().selectedIndexes()
+        self.clipboard["copy"] = [self.model.filePath(index) for index in selected_indices]
+        self.clipboard["cut"] = []
+        self.cut_mode = False
+
+    def paste_items(self):
+        target_index = self.tree_view.selectionModel().currentIndex()
+        target_path = self.model.filePath(target_index)
+
+        if target_path and (self.clipboard["cut"] or self.clipboard["copy"]):
+            if self.cut_mode:
+                for item in self.clipboard["cut"]:
+                    if os.path.exists(item):
+                        if os.path.isdir(item):
+                            shutil.move(item, os.path.join(target_path, os.path.basename(item)))
+                        else:
+                            shutil.move(item, target_path)
+                self.cut_mode = False
+                self.clipboard["cut"] = []
+            else:
+                for item in self.clipboard["copy"]:
+                    if os.path.exists(item):
+                        if os.path.isdir(item):
+                            shutil.copytree(item, os.path.join(target_path, os.path.basename(item)))
+                        else:
+                            shutil.copy2(item, target_path)
+                self.clipboard["copy"] = []
+
+            self.refresh_tree_view()
+            
+    def go_back(self):
+        # Check if there is a previous directory in the back_history
+        if self.navigation_panel.back_history:
+            # Pop the last directory from the back_history
+            previous_directory = self.navigation_panel.back_history.pop()
+            # Set the current directory to the previous directory
+            self.navigation_panel.set_current_directory(previous_directory)
+
+    def refresh_tree_view(self):
+        # Refresh the tree view after cut, copy, or paste operations
+        current_index = self.tree_view.selectionModel().currentIndex()
+        current_path = self.model.filePath(current_index)
+        self.model.setRootPath("/")
+        new_index = self.model.index(current_path)
+        self.tree_view.setRootIndex(new_index)
+
+    def set_current_directory(self, path):
+        self.tree_view.setRootIndex(self.model.index(path))
+        self.selected_folder = path
+
+
+    # Add these two methods to your DiskSpaceAnalyzer class
+    def create_new_directory(self):
+        current_index = self.tree_view.selectionModel().currentIndex()
+        current_path = self.model.filePath(current_index)
+        new_dir_name, ok = QInputDialog.getText(self, "New Directory", "Enter the directory name:")
+        
+        if ok and new_dir_name:
+            new_dir_path = os.path.join(current_path, new_dir_name)
+            try:
+                os.mkdir(new_dir_path)
+                self.refresh_tree_view()
+            except Exception as e:
+                print(f"Error creating directory: {e}")
+
+    def create_new_blank_file(self):
+        # Get the current directory
+        current_index = self.tree_view.selectionModel().currentIndex()
+        current_path = self.model.filePath(current_index)
+
+        if not os.path.isdir(current_path):
+            # If the current path is not a directory, use its parent directory
+            current_path = os.path.dirname(current_path)
+
+        # Ask the user for the new file name
+        new_file_name, ok = QInputDialog.getText(self, "New Blank File", "Enter the file name:")
+
+        if ok and new_file_name:
+            # Create the full path for the new file
+            new_file_path = os.path.join(current_path, new_file_name)
+
+            try:
+                # Create an empty file
+                with open(new_file_path, 'w') as new_file:
+                    pass
+
+                # Update the current directory
+                self.set_current_directory(current_path)
+
+            except Exception as e:
+                print(f"Error creating new file {new_file_path}: {e}")
+ 
+
+
+    def move_to_trash(self, path):
+        try:
+            if os.path.exists(path):
+                # Construct the destination path in the trash directory
+                trash_path = os.path.join(trash_dir, os.path.basename(path))
+                
+                # Use shutil.move to move the directory to the trash
+                shutil.move(path, trash_path)
+        except Exception as e:
+            print(f"Error moving {path} to trash: {e}")
+
+
+    def delete_selected_items(self):
+        selected_indices = self.tree_view.selectionModel().selectedIndexes()
+        selected_paths = [self.model.filePath(index) for index in selected_indices]
+
+        for path in selected_paths:
+            self.move_to_trash(path)
+
+        self.refresh_tree_view()
+
+class PieChartDialog(QDialog):
+    def __init__(self, labels, sizes, file_info):
+        super().__init__()
+
+        self.setWindowTitle("Disk Space Pie Chart")
+        self.setGeometry(100, 100, 800, 600)
+
+        self.figure = Figure()
+        self.canvas = FigureCanvas(self.figure)
+        self.layout = QVBoxLayout(self)
+        self.layout.addWidget(self.canvas)
+
+        self.ax = self.figure.add_subplot(111)
+        self.ax.pie(sizes, labels=labels, autopct='%1.1f%%', shadow=True, startangle=140)
+        self.ax.axis('equal')
+
+        self.file_info_label = QLabel("File Information:")
+        self.layout.addWidget(self.file_info_label)
+
+        self.file_info_text = QTextEdit(self)
+        self.file_info_text.setReadOnly(True)
+        self.layout.addWidget(self.file_info_text)
+
+        self.display_file_info(file_info)
+
+    def display_file_info(self, file_info):
+        self.file_info_text.clear()
+        self.file_info_text.setPlainText("\n".join(file_info))
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = DiskSpaceAnalyzer()
+    window.show()
+    sys.exit(app.exec_())

@@ -44,6 +44,9 @@ class CustomSlider(QSlider):
         event.accept()
 
 class MusicPlayerGUI(QMainWindow):
+    # Define the track_timer at the class level and initialize it to None
+    track_timer = None
+
     def __init__(self):
         super().__init__()
 
@@ -56,7 +59,6 @@ class MusicPlayerGUI(QMainWindow):
         self.media_player.positionChanged.connect(self.update_position)
         self.media_player.mediaStatusChanged.connect(self.media_status_changed)
         self.media_player.stateChanged.connect(self.handle_media_state_changed)
-
         # Initialize the GUI
         self.initUI()
 
@@ -64,11 +66,11 @@ class MusicPlayerGUI(QMainWindow):
         if len(sys.argv) > 1:
             self.load_music_from_command_line()
 
-        # Create a QTimer for checking and playing the next track
-        self.track_timer = QTimer(self)
-        self.track_timer.timeout.connect(self.play_next_track)
-
-
+        # Create a QTimer for checking and playing the next track if not already created
+        if MusicPlayerGUI.track_timer is None:
+            MusicPlayerGUI.track_timer = QTimer(self)
+            MusicPlayerGUI.track_timer.timeout.connect(self.play_next_track)
+   
     def initUI(self):
         self.setWindowTitle("StormOS Music Player")
 
@@ -386,6 +388,7 @@ class MusicPlayerGUI(QMainWindow):
                 song_path = first_item.data(Qt.UserRole)
                 self.play_song(song_path)
 
+
     def play_song(self, song_path):
         if song_path:
             # Stop the currently playing song if it's playing
@@ -394,6 +397,10 @@ class MusicPlayerGUI(QMainWindow):
                 self.is_playing = False
                 self.play_pause_button.setText("Play")
                 self.play_pause_button.setIcon(QIcon.fromTheme('media-playback-start'))
+                # Stop and clear the track_timer if it exists
+                if self.track_timer:
+                    self.track_timer.stop()
+                    self.track_timer = None
 
             media_content = QMediaContent(QUrl.fromLocalFile(song_path))
             self.media_player.setMedia(media_content)
@@ -405,13 +412,9 @@ class MusicPlayerGUI(QMainWindow):
             self.play_pause_button.setIcon(QIcon.fromTheme('media-playback-pause'))
             self.is_playing = True
 
-            # Find the item in the playlist and select it
-            for index in range(self.playlist_widget.count()):
-                item = self.playlist_widget.item(index)
-                if item.data(Qt.UserRole) == song_path:
-                    self.playlist_widget.setCurrentItem(item)
-
-            # Start the track timer to automatically play the next track
+            # Create and start the track_timer to automatically play the next track
+            self.track_timer = QTimer(self)
+            self.track_timer.timeout.connect(self.play_next_track)
             self.track_timer.start(1000)  # Check every second
 
 
