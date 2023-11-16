@@ -14,6 +14,7 @@ from gtts import gTTS  # Import gTTS for text-to-speech
 import subprocess
 import docx  # Import docx for DOCX file support
 from docx import Document  # Import the Document class
+from PyQt5.QtGui import QPainter
 
 # ... (rest of your code)
 
