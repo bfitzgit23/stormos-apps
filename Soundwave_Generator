@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import numpy as np
+import sounddevice as sd
+import soundfile as sf
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QSlider, QLabel, QComboBox, QListWidget
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
+
+class AudioPlayer(QThread):
+    audio_signal = pyqtSignal(np.ndarray)
+
+    def __init__(self, soundscape_path):
+        super().__init__()
+        self.soundscape_path = soundscape_path
+        self.is_playing = False
+        self.stream = None
+
+    def run(self):
+        self.is_playing = True
+        # Read audio file using soundfile
+        data, samplerate = sf.read(self.soundscape_path)
+
+        # Ensure data is in float32 format
+        data = data.astype(np.float32)
+
+        self.stream = sd.OutputStream(samplerate=samplerate, channels=data.shape[1])
+        self.stream.start()
+        blocksize = 1024
+
+        # Play audio and send chunks to the equalizer
+        for i in range(0, len(data), blocksize):
+            if not self.is_playing:
+                break
+            block = data[i:i + blocksize]
+            self.stream.write(block)
+            # Normalize and scale the data for the equalizer
+            block_normalized = np.mean(np.abs(block), axis=0)
+            self.audio_signal.emit(block_normalized)
+
+        self.stream.stop()
+        self.stream.close()
+        self.is_playing = False
+
+    def stop(self):
+        self.is_playing = False
+
+class WhiteNoiseGenerator(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Noise Generator with Soundscape")
+        self.setGeometry(100, 100, 600, 400)
+
+        # Main Layout
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+
+        # Controls Layout
+        self.control_layout = QVBoxLayout()
+        self.main_layout.addLayout(self.control_layout)
+
+        # Volume Control
+        self.volume_label = QLabel("Volume:")
+        self.control_layout.addWidget(self.volume_label)
+
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(50)
+        self.volume_slider.valueChanged.connect(self.adjust_volume)
+        self.control_layout.addWidget(self.volume_slider)
+
+        # Noise Type Selection
+        self.noise_type_combo = QComboBox()
+        self.noise_type_combo.addItems(["White Noise", "Pink Noise", "Brown Noise"])
+        self.control_layout.addWidget(self.noise_type_combo)
+
+        # Start and Stop Noise Buttons
+        self.start_button = QPushButton("Start Noise")
+        self.start_button.clicked.connect(self.start_noise)
+        self.control_layout.addWidget(self.start_button)
+
+        self.stop_button = QPushButton("Stop Noise")
+        self.stop_button.clicked.connect(self.stop_noise)
+        self.control_layout.addWidget(self.stop_button)
+
+        # Soundscape Selection
+        self.soundscape_list = QListWidget()
+        self.control_layout.addWidget(self.soundscape_list)
+
+        self.play_soundscape_button = QPushButton("Play Selected Soundscape")
+        self.play_soundscape_button.clicked.connect(self.play_soundscape)
+        self.control_layout.addWidget(self.play_soundscape_button)
+
+        # Stop Soundscape Button
+        self.stop_soundscape_button = QPushButton("Stop Soundscape")
+        self.stop_soundscape_button.clicked.connect(self.stop_soundscape)
+        self.control_layout.addWidget(self.stop_soundscape_button)
+
+        self.refresh_button = QPushButton("Refresh Soundscapes")
+        self.refresh_button.clicked.connect(self.refresh_soundscapes)
+        self.control_layout.addWidget(self.refresh_button)
+
+        # Audio parameters
+        self.sample_rate = 44100  # Samples per second
+        self.noise_stream = None
+
+        # Soundscape
+        self.soundscape_thread = None
+        self.soundscape_path = ""
+        self.soundscapes_dir = os.path.join(os.path.expanduser("~"), "soundscapes")
+
+        # Load soundscapes initially
+        self.refresh_soundscapes()
+
+    def refresh_soundscapes(self):
+        self.soundscape_list.clear()
+        for file in os.listdir(self.soundscapes_dir):
+            if file.endswith(('.mp3', '.wav', '.ogg')):  # Adjust formats as needed
+                self.soundscape_list.addItem(file)
+
+    def start_noise(self):
+        volume = self.volume_slider.value() / 100.0  # Convert to a range between 0 and 1
+        self.noise_stream = sd.OutputStream(samplerate=self.sample_rate, channels=1, dtype='float32', callback=self.audio_callback)
+        self.noise_stream.start()
+
+    def stop_noise(self):
+        # Stop audio stream
+        if self.noise_stream is not None:
+            self.noise_stream.stop()
+            self.noise_stream.close()
+            self.noise_stream = None
+
+    def audio_callback(self, outdata, frames, time, status):
+        if status:
+            print(status)
+        noise_type = self.noise_type_combo.currentText()
+
+        if noise_type == "White Noise":
+            noise = np.random.normal(0, 1, frames)  # White noise
+        elif noise_type == "Pink Noise":
+            noise = self.pink_noise(frames)  # Pink noise
+        elif noise_type == "Brown Noise":
+            noise = self.brown_noise(frames)  # Brown noise
+
+        volume = self.volume_slider.value() / 100.0  # Get volume
+        outdata[:] = noise.reshape(-1, 1) * volume  # Scale noise by volume
+
+    def pink_noise(self, num_samples):
+        # Simple implementation of pink noise
+        num_samples = int(num_samples)
+        num_columns = 16
+        num_rows = num_samples // num_columns + 1
+        random_numbers = np.random.randn(num_rows, num_columns)
+        pink_noise = np.cumsum(random_numbers, axis=0)
+        return pink_noise.flatten()[:num_samples]
+
+    def brown_noise(self, num_samples):
+        # Simple implementation of brown noise (integrated white noise)
+        white_noise = np.random.normal(0, 1, num_samples)
+        brown_noise = np.cumsum(white_noise)  # Integrate white noise
+        return brown_noise / np.max(np.abs(brown_noise))  # Normalize
+
+    def play_soundscape(self):
+        selected_item = self.soundscape_list.currentItem()
+        if selected_item:
+            self.soundscape_path = os.path.join(self.soundscapes_dir, selected_item.text())
+            if self.soundscape_thread is not None and self.soundscape_thread.is_playing:
+                return  # Prevent starting multiple threads
+            self.soundscape_thread = AudioPlayer(self.soundscape_path)
+            self.soundscape_thread.start()
+
+    def stop_soundscape(self):
+        if self.soundscape_thread is not None and self.soundscape_thread.is_playing:
+            self.soundscape_thread.stop()  # Signal to stop the thread
+            self.soundscape_thread.wait()  # Wait for the thread to finish
+
+    def adjust_volume(self):
+        if self.noise_stream:
+            self.noise_stream.volume = self.volume_slider.value() / 100.0  # Adjust volume level
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = WhiteNoiseGenerator()
+    window.show()
+    sys.exit(app.exec_())

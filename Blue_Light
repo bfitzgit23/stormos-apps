@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+
+import sys
+import subprocess
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QLabel, QSlider, QMessageBox,
+    QPushButton, QSystemTrayIcon, QMenu, QStyle, QCheckBox
+)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon
+
+
+class BlueLightFilterApp(QWidget):
+    """
+    BlueLightFilterApp is the main application window that provides controls for blue light filtering.
+    """
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Blue Light Filter")
+        self.setGeometry(100, 100, 300, 250)  # Initial window size and position
+
+        layout = QVBoxLayout()
+
+        # Label for Blue Light Intensity
+        self.intensity_label = QLabel("Blue Light Intensity: 100%")
+        layout.addWidget(self.intensity_label)
+
+        # Slider for adjusting blue light intensity
+        self.intensity_slider = QSlider(Qt.Horizontal)
+        self.intensity_slider.setRange(0, 100)
+        self.intensity_slider.setValue(100)
+        self.intensity_slider.setTickPosition(QSlider.TicksBelow)
+        self.intensity_slider.setTickInterval(10)
+        self.intensity_slider.valueChanged.connect(self.change_intensity_main)
+        layout.addWidget(self.intensity_slider)
+
+        # Label for Temperature
+        self.temp_label = QLabel("Temperature: 6500K")
+        layout.addWidget(self.temp_label)
+
+        # Slider for setting temperature
+        self.temp_slider = QSlider(Qt.Horizontal)
+        self.temp_slider.setRange(3500, 7500)  # Temperature range in Kelvin
+        self.temp_slider.setValue(6500)
+        self.temp_slider.setTickPosition(QSlider.TicksBelow)
+        self.temp_slider.setTickInterval(500)
+        self.temp_slider.valueChanged.connect(self.change_temperature_main)
+        layout.addWidget(self.temp_slider)
+
+        # Toggle for quick setting to 7500K
+        self.toggle_7500K = QCheckBox("Set to 7500K")
+        self.toggle_7500K.stateChanged.connect(self.toggle_7500K_main)
+        layout.addWidget(self.toggle_7500K)
+
+        # Button to enable/disable blue light filter
+        self.toggle_button = QPushButton("Enable Blue Light Filter")
+        self.toggle_button.clicked.connect(self.toggle_filter)
+        layout.addWidget(self.toggle_button)
+
+        # Checkbox to enable/disable tray functionality
+        self.tray_checkbox = QCheckBox("Minimize to Tray on Close")
+        layout.addWidget(self.tray_checkbox)
+
+        self.setLayout(layout)
+
+        self.is_filter_enabled = False  # Track filter state
+
+        # System Tray Setup
+        self.tray_icon = QSystemTrayIcon(self)
+
+        # **Use a standard system icon for the tray**
+        tray_icon = self.style().standardIcon(QStyle.SP_ComputerIcon)
+        self.tray_icon.setIcon(tray_icon)
+        self.tray_icon.setVisible(True)
+
+        # Create the context menu for the tray icon
+        tray_menu = QMenu()
+
+        show_action = tray_menu.addAction("Show")
+        show_action.triggered.connect(self.show_window)
+
+        quit_action = tray_menu.addAction("Quit")
+        quit_action.triggered.connect(self.quit_application)
+
+        # Add the menu to the tray icon
+        self.tray_icon.setContextMenu(tray_menu)
+
+        # Connect the tray icon's activated signal (e.g., click)
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+
+    # ------------------- Main Window Methods -------------------
+
+    def change_intensity_main(self, value):
+        """
+        Update the blue light intensity from the main window.
+        """
+        self.intensity_label.setText(f"Blue Light Intensity: {value}%")
+        self.apply_redshift()
+
+    def change_temperature_main(self, value):
+        """
+        Update the screen temperature from the main window.
+        """
+        self.temp_label.setText(f"Temperature: {value}K")
+        self.apply_redshift()
+
+    def toggle_7500K_main(self, state):
+        """
+        Toggle the temperature to 7500K from the main window.
+        """
+        if state == Qt.Checked:
+            self.temp_slider.setValue(7500)
+            self.intensity_slider.setValue(100)
+        else:
+            # Optionally, revert to a default or previous temperature
+            pass
+
+    def toggle_filter(self):
+        """
+        Enable or disable the blue light filter.
+        """
+        if self.is_filter_enabled:
+            # Disable the blue light filter
+            subprocess.run(["redshift", "-x"])  # Reset to default
+            self.toggle_button.setText("Enable Blue Light Filter")
+            self.is_filter_enabled = False
+            self.intensity_label.setText("Blue Light Intensity: 100%")
+            self.temp_label.setText("Temperature: 6500K")
+            self.intensity_slider.setValue(100)
+            self.temp_slider.setValue(6500)
+        else:
+            # Enable the blue light filter with current slider values
+            self.apply_redshift()
+            self.toggle_button.setText("Disable Blue Light Filter")
+            self.is_filter_enabled = True
+
+    def apply_redshift(self):
+        """
+        Apply redshift settings based on current slider values.
+        """
+        intensity = self.intensity_slider.value()
+        temp = 3500 + (intensity * 4000 // 100)  # Map intensity to temperature
+        self.temp_label.setText(f"Temperature: {temp}K")
+        try:
+            subprocess.run(["redshift", "-x"], check=True)  # Reset to default
+            subprocess.run(["redshift", "-P", "-O", str(temp)], check=True)  # Set new temperature
+            print(f"Redshift set to {temp}K with intensity {intensity}%")
+        except subprocess.CalledProcessError as e:
+            QMessageBox.critical(self, "Error", f"Failed to set redshift: {e}")
+
+    # ------------------- Tray Icon Methods -------------------
+
+    def tray_icon_activated(self, reason):
+        """
+        Handle activation of the tray icon (e.g., single click).
+        """
+        if reason == QSystemTrayIcon.Trigger:
+            if self.isHidden():
+                self.show_window()
+
+    def show_window(self):
+        """
+        Show the main window from the tray.
+        """
+        self.show()
+        print("Main window shown from tray.")  # Debugging statement
+
+    def quit_application(self):
+        """
+        Quit the application gracefully from the tray menu.
+        """
+        # Reset settings before quitting
+        subprocess.run(["redshift", "-x"])  # Reset to default
+        QApplication.quit()
+
+    # ------------------- Close Event -------------------
+
+    def closeEvent(self, event):
+        """
+        Override the close event to minimize to tray if the checkbox is checked.
+        """
+        if self.tray_checkbox.isChecked():
+            event.ignore()  # Ignore the close event
+            self.hide()      # Hide the main window
+            self.tray_icon.show()  # Ensure tray icon is shown
+            print("Application minimized to tray.")  # Debugging statement
+        else:
+            # Proceed with closing the application
+            subprocess.run(["redshift", "-x"])  # Reset to default
+            event.accept()
+
+
+def main():
+    """
+    Main function to run the application.
+    """
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)  # Ensure the app keeps running in tray
+
+    # Check for '-tray' argument
+    tray_mode = '-tray' in sys.argv
+    print(f"Tray mode: {tray_mode}")  # Debugging statement
+
+    # Create the main application window
+    window = BlueLightFilterApp()
+
+    if tray_mode:
+        # Start in tray mode: hide the main window
+        window.hide()
+        print("Tray mode initialized: Main window hidden.")  # Debugging
+    else:
+        # Show the main window normally
+        window.show()
+        print("Main window shown.")  # Debugging statement
+
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

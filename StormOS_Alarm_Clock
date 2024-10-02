@@ -1,0 +1,146 @@
+#!/usr/bin/env python
+
+import gi
+gi.require_version("Gtk", "3.0")
+import time
+import threading
+import subprocess
+import os
+from datetime import datetime
+import pytz  # Make sure to install pytz
+from gi.repository import Gtk, GLib
+
+class AlarmClockApp:
+    def __init__(self):
+        self.window = Gtk.Window(title="Alarm Clock")
+        self.window.set_border_width(10)
+        self.window.set_default_size(250, 250)
+
+        # Current time label
+        self.current_time_label = Gtk.Label()
+        self.update_time()  # Initialize the current time
+
+        # Get current time in local timezone
+        local_tz = pytz.timezone('America/New_York')  # Set to your local timezone
+        now = datetime.now(local_tz)
+        current_hour = now.hour
+        current_minute = now.minute
+
+        print(f"Current Hour: {current_hour}, Current Minute: {current_minute}")  # Debugging info
+
+        # Hour combo box
+        self.hour_combo = Gtk.ComboBoxText()
+        for hour in range(1, 13):
+            self.hour_combo.append_text(f"{hour:02}")  # Format hour as two digits
+
+        # Minute combo box
+        self.minute_combo = Gtk.ComboBoxText()
+        for minute in range(0, 60):
+            self.minute_combo.append_text(f"{minute:02}")  # Format minute as two digits
+
+        # AM/PM combo box
+        self.am_pm_combo = Gtk.ComboBoxText()
+        self.am_pm_combo.append_text("AM")
+        self.am_pm_combo.append_text("PM")
+
+        # Set the active hour correctly in 12-hour format
+        if current_hour == 0:
+            self.hour_combo.set_active(11)  # 12 AM is represented as 12 in the dropdown
+            self.am_pm_combo.set_active(0)  # Set to AM
+        elif current_hour < 12:
+            self.hour_combo.set_active(current_hour - 1)  # Set the active hour (1-11)
+            self.am_pm_combo.set_active(0)  # Set to AM
+        elif current_hour == 12:
+            self.hour_combo.set_active(11)  # 12 PM should also show as 12
+            self.am_pm_combo.set_active(1)  # Set to PM
+        else:
+            self.hour_combo.set_active(current_hour - 13)  # Convert 13-23 to 0-11 for dropdown
+            self.am_pm_combo.set_active(1)  # Set to PM
+
+        self.minute_combo.set_active(current_minute)  # Set active based on current minute
+
+        # Alarm repetition combo box
+        self.repetition_combo = Gtk.ComboBoxText()
+        for i in range(3, 6):  # Options for repetitions from 3 to 5
+            self.repetition_combo.append_text(str(i))
+        self.repetition_combo.set_active(0)  # Default to 3 repetitions
+
+        # Create a horizontal box for hour and minute combo boxes
+        self.time_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.time_hbox.pack_start(self.hour_combo, True, True, 0)
+        self.time_hbox.pack_start(self.minute_combo, True, True, 0)
+
+        self.set_button = Gtk.Button(label="Set Alarm")
+        self.set_button.connect("clicked", self.set_alarm)
+
+        self.vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.vbox.pack_start(self.current_time_label, True, True, 0)
+        self.vbox.pack_start(self.time_hbox, True, True, 0)  # Add the time box
+        self.vbox.pack_start(self.am_pm_combo, True, True, 0)
+        self.vbox.pack_start(Gtk.Label(label="Repeat Alarm: "), True, True, 0)
+        self.vbox.pack_start(self.repetition_combo, True, True, 0)  # Add the repetition combo box
+        self.vbox.pack_start(self.set_button, True, True, 0)
+
+        self.window.add(self.vbox)
+        self.window.connect("destroy", Gtk.main_quit)
+        self.window.show_all()
+
+        # Start updating the current time every second
+        self.update_time_loop()
+
+    def update_time(self):
+        local_tz = pytz.timezone('America/New_York')  # Use the same timezone for displaying current time
+        current_time = datetime.now(local_tz).strftime("%I:%M %p")  # Format current time as HH:MM AM/PM
+        self.current_time_label.set_text(f"Current Time: {current_time}")
+
+    def update_time_loop(self):
+        self.update_time()  # Update the label with the current time
+        GLib.timeout_add(1000, self.update_time_loop)  # Schedule to update every second
+
+    def set_alarm(self, widget):
+        hour = self.hour_combo.get_active_text()
+        minute = self.minute_combo.get_active_text()
+        am_pm = self.am_pm_combo.get_active_text()
+        repetitions = int(self.repetition_combo.get_active_text())
+
+        # Convert to 24-hour format
+        if am_pm == "PM" and hour != "12":
+            hour = str(int(hour) + 12)
+        elif am_pm == "AM" and hour == "12":
+            hour = "00"
+
+        alarm_time = f"{hour}:{minute}"
+
+        # Show confirmation dialog
+        dialog = Gtk.MessageDialog(self.window, 0, Gtk.MessageType.INFO, Gtk.ButtonsType.OK, "Alarm Set!")
+        dialog.format_secondary_text(f"Alarm set for {alarm_time}. Will repeat {repetitions} times.")
+        dialog.run()
+        dialog.destroy()
+
+        threading.Thread(target=self.check_alarm, args=(alarm_time, repetitions), daemon=True).start()
+
+    def check_alarm(self, alarm_time, repetitions):
+        for count in range(repetitions):
+            current_time = time.strftime("%H:%M")
+            while current_time != alarm_time:
+                current_time = time.strftime("%H:%M")
+                time.sleep(1)
+
+            # Trigger the alarm sound
+            self.trigger_alarm()
+
+            # Pause between repetitions
+            time.sleep(1)  # 1-second pause between repeats
+
+    def trigger_alarm(self):
+        # Get the user's home directory and the sound file path
+        user_home = os.path.expanduser("~")
+        sound_file = os.path.join(user_home, "Music", "phone.wav")
+        
+        # Play the alarm sound using paplay
+        subprocess.Popen(["paplay", sound_file])
+        # No dialog will be shown now
+
+if __name__ == "__main__":
+    AlarmClockApp()
+    Gtk.main()

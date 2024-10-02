@@ -2,8 +2,12 @@
 import sys
 import subprocess
 import re
+import sqlite3
+import shutil
+import os
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QListWidget, QMenu, QAction, QListWidgetItem
 from PyQt5.QtGui import QClipboard
+from bs4 import BeautifulSoup
 
 def is_chrome_installed() -> bool:
     try:
@@ -18,12 +22,53 @@ def is_chromium_installed() -> bool:
         return True
     except subprocess.CalledProcessError:
         return False
+    except FileNotFoundError:
+        return False
+
+def is_firefox_installed() -> bool:
+    try:
+        subprocess.check_output(["firefox", "--version"])
+        return True
+    except subprocess.CalledProcessError:
+        return False
+    except FileNotFoundError:
+        return False
+
+def copy_firefox_database() -> str:
+    home_dir = subprocess.check_output(["bash", "-c", "echo $HOME"]).decode().strip()
+    # Get the actual path to places.sqlite
+    profile_path = os.path.join(home_dir, ".mozilla/firefox/*.default-release/places.sqlite")
+    places_db = subprocess.check_output(["bash", "-c", "ls " + profile_path]).decode().strip()
+    db_copy_path = os.path.join(home_dir, "places_copy.sqlite")
+
+    # Copy the database file to a temporary location
+    shutil.copyfile(places_db, db_copy_path)
+    return db_copy_path
+
+def get_firefox_bookmarks() -> list:
+    bookmarks = []
+    if is_firefox_installed():
+        db_copy_path = copy_firefox_database()
+        conn = None
+        try:
+            conn = sqlite3.connect(db_copy_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT moz_bookmarks.title, moz_places.url FROM moz_bookmarks INNER JOIN moz_places ON moz_bookmarks.fk = moz_places.id")
+            rows = cursor.fetchall()
+
+            for title, url in rows:
+                bookmarks.append((title, url))
+
+        except sqlite3.OperationalError as e:
+            print(f"Error accessing Firefox bookmarks: {e}")
+        finally:
+            if conn:
+                conn.close()
+            # Remove the copied database file after use
+            os.remove(db_copy_path)
+    return bookmarks
 
 def get_bookmarks() -> list:
-    """
-    Retrieve the Chrome and Chromium bookmarks and extract the bookmark names and URLs using jq.
-    Returns a list of tuples, where each tuple contains the name and URL of a bookmark.
-    """
     bookmarks = []
 
     if is_chrome_installed():
@@ -34,8 +79,7 @@ def get_bookmarks() -> list:
         chrome_bookmarks_data = subprocess.check_output(
             [
                 "jq",
-                '-r',
-                '.. | objects | select(.type?=="url") | "\(.name)@@\(.url)"',
+                r'.. | objects | select(.type?=="url") | "\(.name)@@\(.url)"',
                 chrome_bookmarks_file,
             ]
         ).decode().strip()
@@ -50,14 +94,27 @@ def get_bookmarks() -> list:
         chromium_bookmarks_data = subprocess.check_output(
             [
                 "jq",
-                '-r',
-                '.. | objects | select(.type?=="url") | "\(.name)@@\(.url)"',
+                r'.. | objects | select(.type?=="url") | "\(.name)@@\(.url)"',
                 chromium_bookmarks_file,
             ]
         ).decode().strip()
         chromium_bookmarks = [bookmark.split("@@") for bookmark in chromium_bookmarks_data.split("\n")]
         bookmarks.extend(chromium_bookmarks)
 
+    # Add Firefox bookmarks
+    bookmarks.extend(get_firefox_bookmarks())
+
+    return bookmarks
+
+def get_bookmarks_from_html(file_path: str) -> list:
+    bookmarks = []
+    with open(file_path, 'r', encoding='utf-8') as file:
+        soup = BeautifulSoup(file, 'html.parser')
+        for dt in soup.find_all('DT'):
+            if dt.a:
+                name = dt.a.string
+                url = dt.a['HREF']
+                bookmarks.append((name, url))
     return bookmarks
 
 class CustomListWidget(QListWidget):
@@ -90,7 +147,7 @@ class BookmarkSearch(QMainWindow):
 
         search_layout = QHBoxLayout()
         self.entry = QLineEdit()
-        self.entry.textChanged.connect(self.on_search)  # Call on_search on text change
+        self.entry.textChanged.connect(self.on_search)
         search_button = QPushButton("Search")
         search_button.clicked.connect(self.on_search)
         search_layout.addWidget(self.entry)
@@ -98,7 +155,7 @@ class BookmarkSearch(QMainWindow):
 
         layout.addLayout(search_layout)
 
-        self.bookmark_list = CustomListWidget()  # Use CustomListWidget
+        self.bookmark_list = CustomListWidget()
         layout.addWidget(self.bookmark_list)
 
         self.bookmark_list.itemDoubleClicked.connect(self.launch_browser_tab)
@@ -111,8 +168,7 @@ class BookmarkSearch(QMainWindow):
         self.bookmark_list.clear()
         bookmarks = get_bookmarks()
         for bookmark in bookmarks:
-            name, url = bookmark[0], bookmark[1]
-            # Use regular expressions for flexible matching
+            name, url = bookmark[0], bookmark[1].strip(' "')  # Strip extra quotes and whitespace
             if re.search(re.escape(search_term), name, re.IGNORECASE) or re.search(re.escape(search_term), url, re.IGNORECASE):
                 item = QListWidgetItem(f"{name} - {url}")
                 item.url = url
@@ -124,6 +180,8 @@ class BookmarkSearch(QMainWindow):
             subprocess.Popen(["google-chrome-stable", "--new-tab", url])
         elif is_chromium_installed():
             subprocess.Popen(["chromium", "--new-tab", url])
+        elif is_firefox_installed():
+            subprocess.Popen(["firefox", "--new-tab", url])
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
