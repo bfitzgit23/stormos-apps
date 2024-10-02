@@ -7,7 +7,8 @@ import requests
 import shutil
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QLineEdit, QPushButton, QTextBrowser,
-    QVBoxLayout, QWidget, QMessageBox, QComboBox, QHBoxLayout, QProgressBar
+    QVBoxLayout, QWidget, QMessageBox, QComboBox, QHBoxLayout, QProgressBar,
+    QAction, QFileDialog
 )
 from PyQt5.QtCore import QSize, Qt, QThread, pyqtSignal
 from git import Repo, GitCommandError
@@ -97,6 +98,17 @@ class GitHubGitClient(QMainWindow):
         self.setWindowTitle('GitHub Git Client')
         self.setGeometry(100, 100, 800, 600)
 
+        # Create Menu Bar
+        menu_bar = self.menuBar()
+
+        # Help Menu
+        help_menu = menu_bar.addMenu('Help')
+
+        # About Action
+        about_action = QAction('About', self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
+
         # Create central widget and layout
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
@@ -165,6 +177,30 @@ class GitHubGitClient(QMainWindow):
         # Text Browser for Displaying Messages
         self.repo_details_browser = QTextBrowser(self)
         layout.addWidget(self.repo_details_browser)
+
+    def show_about_dialog(self):
+        """
+        Display the About dialog with information about the application.
+        """
+        credentials_path = os.path.expanduser("~/Documents/GitHubGitClient/github_credentials.json")
+        about_text = f"""
+        <h2>GitHub Git Client</h2>
+        <p><strong>Version:</strong> 1.0</p>
+        <p><strong>Author:</strong> Your Name</p>
+        <p>This application allows you to interact with your GitHub repositories through a graphical interface.</p>
+        <p><strong>Credentials File:</strong> Stored at <code>{credentials_path}</code></p>
+        <p><strong>Cloned Repositories Location:</strong> Stored at <code>{self.default_clone_dir}</code></p>
+        <p><strong>Usage Instructions:</strong></p>
+        <ol>
+            <li>Enter your GitHub username and Personal Access Token (PAT) in the provided fields.</li>
+            <li>Click "Configure Credentials" to save your credentials and set up Git.</li>
+            <li>Click "Fetch Repositories" to retrieve your GitHub repositories.</li>
+            <li>Select a repository from "GitHub Repositories" to clone it, or choose an existing clone from "Existing Cloned Repositories".</li>
+            <li>Use the "Commit Changes" and "Push Changes" buttons to manage your repository.</li>
+        </ol>
+        <p>For more information, refer to the documentation.</p>
+        """
+        QMessageBox.about(self, "About GitHub Git Client", about_text)
 
     def display_message(self, message):
         """
