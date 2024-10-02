@@ -20,17 +20,22 @@ class CloneThread(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, repo_url, local_path, parent=None):
+    def __init__(self, repo_url, local_path, username, email, parent=None):
         super().__init__(parent)
         self.repo_url = repo_url
         self.local_path = local_path
+        self.username = username
+        self.email = email
 
     def run(self):
         try:
             self.progress.emit("Cloning repository...")
-            Repo.clone_from(self.repo_url, self.local_path)
-            self.progress.emit("Repository cloned successfully.")
-            self.finished.emit(True, "Cloning completed.")
+            repo = Repo.clone_from(self.repo_url, self.local_path)
+            self.progress.emit("Setting local Git configurations...")
+            repo.config_writer().set_value("user", "name", self.username).release()
+            repo.config_writer().set_value("user", "email", self.email).release()
+            self.progress.emit("Repository cloned and configured successfully.")
+            self.finished.emit(True, "Cloning and configuration completed.")
         except GitCommandError as e:
             self.finished.emit(False, f"Error cloning repository: {e}")
         except Exception as e:
@@ -90,7 +95,7 @@ class GitHubGitClient(QMainWindow):
     def initUI(self):
         """Set up the user interface."""
         self.setWindowTitle('GitHub Git Client')
-        self.setGeometry(100, 100, 600, 400)
+        self.setGeometry(100, 100, 800, 600)
 
         # Create central widget and layout
         central_widget = QWidget(self)
@@ -112,6 +117,11 @@ class GitHubGitClient(QMainWindow):
 
         layout.addLayout(input_layout)
 
+        # Configure Credentials Button
+        configure_credentials_button = QPushButton('Configure Credentials', self)
+        configure_credentials_button.clicked.connect(self.configure_git_credentials)
+        layout.addWidget(configure_credentials_button)
+
         # Fetch Repositories Button
         fetch_repos_button = QPushButton('Fetch Repositories', self)
         fetch_repos_button.clicked.connect(self.fetch_repositories)
@@ -119,12 +129,23 @@ class GitHubGitClient(QMainWindow):
 
         # Repository Selection ComboBox
         self.repo_combo_box = QComboBox(self)
+        layout.addWidget(QLabel("GitHub Repositories:"))
         layout.addWidget(self.repo_combo_box)
+
+        # Existing Cloned Repositories ComboBox
+        self.existing_clones_combo_box = QComboBox(self)
+        layout.addWidget(QLabel("Existing Cloned Repositories:"))
+        layout.addWidget(self.existing_clones_combo_box)
 
         # Clone Repository Button
         clone_repo_button = QPushButton('Clone Repository', self)
         clone_repo_button.clicked.connect(self.initiate_clone_repository)
         layout.addWidget(clone_repo_button)
+
+        # Use Existing Repository Button
+        use_existing_repo_button = QPushButton('Use Selected Existing Repository', self)
+        use_existing_repo_button.clicked.connect(self.use_existing_repository)
+        layout.addWidget(use_existing_repo_button)
 
         # Commit Message Input and Commit Button
         commit_layout = QHBoxLayout()
@@ -189,17 +210,58 @@ class GitHubGitClient(QMainWindow):
                     self.token_input.setText(credentials['token'])
                     self.github_token = credentials['token']
                 self.display_message("GitHub credentials loaded successfully.")
+                # After loading credentials, fetch existing clones
+                self.load_existing_clones()
             except Exception as e:
                 self.display_message(f"Error loading Git credentials: {e}")
         else:
-            self.display_message("GitHub credentials file not found.")
+            self.display_message("GitHub credentials file not found. Please configure your credentials.")
+
+    def configure_git_credentials(self):
+        """
+        Configure Git with the provided username and email, and save the credentials.
+        """
+        try:
+            # Get the GitHub username and token from the input fields
+            username = self.username_input.text().strip()
+            token = self.token_input.text().strip()
+
+            if not username or not token:
+                QMessageBox.warning(self, "Warning", "Please enter your GitHub username and Personal Access Token (PAT).")
+                return
+
+            # Configure Git credentials globally using subprocess
+            import subprocess
+            subprocess.run(['git', 'config', '--global', 'user.name', username], check=True)
+            subprocess.run(['git', 'config', '--global', 'user.email', f'{username}@users.noreply.github.com'], check=True)
+            subprocess.run(['git', 'config', '--global', 'credential.helper', 'store'], check=True)
+
+            # Verify that configurations are set correctly
+            name = subprocess.check_output(['git', 'config', '--global', 'user.name']).decode().strip()
+            email = subprocess.check_output(['git', 'config', '--global', 'user.email']).decode().strip()
+
+            if name != username or email != f"{username}@users.noreply.github.com":
+                raise Exception("Git global configurations did not set correctly.")
+
+            # Save Git credentials to the JSON file
+            self.save_git_credentials(username, token)
+
+            # Load existing clones after configuring credentials
+            self.load_existing_clones()
+
+        except subprocess.CalledProcessError as e:
+            self.display_message(f"Error configuring Git credentials: {e}")
+            QMessageBox.critical(self, "Configuration Error", f"Failed to configure Git: {e}")
+        except Exception as e:
+            self.display_message(f"Unexpected error configuring Git credentials: {e}")
+            QMessageBox.critical(self, "Configuration Error", f"An unexpected error occurred:\n{e}")
 
     def fetch_repositories(self):
         """
         Fetch the list of GitHub repositories for the user and populate the combo box.
         """
-        username = self.username_input.text()
-        self.github_token = self.token_input.text()
+        username = self.username_input.text().strip()
+        self.github_token = self.token_input.text().strip()
 
         if not username or not self.github_token:
             QMessageBox.warning(self, "Warning", "Please enter your GitHub username and Personal Access Token (PAT).")
@@ -229,6 +291,25 @@ class GitHubGitClient(QMainWindow):
         except Exception as e:
             self.display_message(f"Error fetching repositories: {e}")
 
+    def load_existing_clones(self):
+        """
+        Scan the default cloning directory for existing cloned repositories and populate the combo box.
+        """
+        try:
+            existing_repos = []
+            for item in os.listdir(self.default_clone_dir):
+                item_path = os.path.join(self.default_clone_dir, item)
+                if os.path.isdir(item_path) and os.path.isdir(os.path.join(item_path, '.git')):
+                    existing_repos.append(item)
+            self.existing_clones_combo_box.clear()
+            self.existing_clones_combo_box.addItems(existing_repos)
+            if existing_repos:
+                self.display_message("Existing cloned repositories detected.")
+            else:
+                self.display_message("No existing cloned repositories found.")
+        except Exception as e:
+            self.display_message(f"Error loading existing clones: {e}")
+
     def initiate_clone_repository(self):
         """
         Initiate the cloning process by selecting a repository and cloning it asynchronously.
@@ -239,11 +320,11 @@ class GitHubGitClient(QMainWindow):
             return
 
         # Construct the repository URL with authentication
-        username = self.username_input.text()
-        token = self.token_input.text()
+        username = self.username_input.text().strip()
+        token = self.token_input.text().strip()
 
         if not username or not token:
-            self.display_message("Please enter your GitHub username and Personal Access Token (PAT).")
+            QMessageBox.warning(self, "Warning", "Please enter your GitHub username and Personal Access Token (PAT).")
             return
 
         repo_url = f"https://{username}:{token}@github.com/{username}/{repo_name}.git"
@@ -253,11 +334,32 @@ class GitHubGitClient(QMainWindow):
 
         # Check if the directory already exists
         if os.path.exists(local_path):
-            QMessageBox.warning(self, "Warning", f"The directory '{local_path}' already exists.")
-            return
+            reply = QMessageBox.question(
+                self, 'Repository Already Cloned',
+                f"The repository '{repo_name}' is already cloned at:\n{local_path}\n\nDo you want to use the existing clone?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.repo_path = local_path
+                self.display_message(f"Using existing repository at: {self.repo_path}")
+                return
+            else:
+                # Ask for a different directory
+                alternative_path = QFileDialog.getExistingDirectory(
+                    self, "Select Alternative Directory for Cloning",
+                    self.default_clone_dir
+                )
+                if alternative_path:
+                    local_path = os.path.join(alternative_path, repo_name)
+                    if os.path.exists(local_path):
+                        QMessageBox.warning(self, "Warning", f"The directory '{local_path}' already exists.")
+                        return
+                else:
+                    self.display_message("Cloning operation canceled.")
+                    return
 
-        # Start the cloning thread
-        self.clone_thread = CloneThread(repo_url, local_path)
+        # Start the cloning thread with username and email
+        self.clone_thread = CloneThread(repo_url, local_path, username, f"{username}@users.noreply.github.com")
         self.clone_thread.progress.connect(self.update_progress)
         self.clone_thread.finished.connect(self.handle_clone_finished)
         self.clone_thread.start()
@@ -279,10 +381,28 @@ class GitHubGitClient(QMainWindow):
         if success:
             self.repo_path = os.path.join(self.default_clone_dir, self.repo_combo_box.currentText())
             self.display_message(f"Repository path set to: {self.repo_path}")
+            # Refresh existing clones list
+            self.load_existing_clones()
+
+    def use_existing_repository(self):
+        """
+        Use a selected existing cloned repository.
+        """
+        repo_name = self.existing_clones_combo_box.currentText()
+        if not repo_name:
+            QMessageBox.warning(self, "Warning", "No existing cloned repositories to use.")
+            return
+
+        local_path = os.path.join(self.default_clone_dir, repo_name)
+        if os.path.exists(local_path):
+            self.repo_path = local_path
+            self.display_message(f"Using existing repository at: {self.repo_path}")
+        else:
+            self.display_message(f"Selected repository path does not exist: {local_path}")
 
     def commit_changes(self):
         """
-        Commit staged changes with a user-provided commit message using GitPython.
+        Automatically stage all changes (tracked and untracked) and commit them with a user-provided message using GitPython.
         """
         commit_message = self.commit_input.text().strip()
 
@@ -291,12 +411,17 @@ class GitHubGitClient(QMainWindow):
             return
 
         if not self.repo_path:
-            self.display_message("Please clone a repository first.")
+            self.display_message("Please clone or select a repository first.")
             return
 
         try:
             repo = Repo(self.repo_path)
             if repo.is_dirty(index=True, working_tree=True, untracked_files=True):
+                # Stage all changes including untracked files
+                repo.git.add('--all')
+                self.display_message("All changes staged for commit.")
+
+                # Commit the changes
                 repo.git.commit('-m', commit_message)
                 self.display_message(f"Changes committed with message: {commit_message}")
                 self.commit_input.clear()
@@ -304,15 +429,17 @@ class GitHubGitClient(QMainWindow):
                 self.display_message("No changes to commit.")
         except GitCommandError as e:
             self.display_message(f"Error committing changes: {e}")
+            QMessageBox.critical(self, "Commit Error", f"Failed to commit changes:\n{e}")
         except Exception as e:
             self.display_message(f"Unexpected error committing changes: {e}")
+            QMessageBox.critical(self, "Commit Error", f"An unexpected error occurred:\n{e}")
 
     def push_changes(self):
         """
         Push committed changes to the remote repository using GitPython.
         """
         if not self.repo_path:
-            self.display_message("Please clone a repository first.")
+            self.display_message("Please clone or select a repository first.")
             return
 
         # Start the push thread
@@ -335,6 +462,8 @@ class GitHubGitClient(QMainWindow):
         """
         self.progress_bar.setVisible(False)
         self.display_message(message)
+        if success:
+            self.display_message("Push operation completed successfully.")
 
     def update_progress(self, message):
         """
@@ -350,7 +479,7 @@ class GitHubGitClient(QMainWindow):
         Display the contents of the repository in the text browser.
         """
         if not self.repo_path:
-            self.display_message("Please clone a repository first.")
+            self.display_message("Please clone or select a repository first.")
             return
 
         try:
