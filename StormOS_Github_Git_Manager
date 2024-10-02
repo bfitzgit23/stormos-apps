@@ -159,6 +159,11 @@ class GitHubGitClient(QMainWindow):
         use_existing_repo_button.clicked.connect(self.use_existing_repository)
         layout.addWidget(use_existing_repo_button)
 
+        # Set Cloning Directory Button
+        set_clone_dir_button = QPushButton('Set Default Cloning Directory', self)
+        set_clone_dir_button.clicked.connect(self.set_cloning_directory)
+        layout.addWidget(set_clone_dir_button)
+
         # Commit Message Input and Commit Button
         commit_layout = QHBoxLayout()
         self.commit_input = QLineEdit(self)
@@ -197,6 +202,7 @@ class GitHubGitClient(QMainWindow):
             <li>Click "Fetch Repositories" to retrieve your GitHub repositories.</li>
             <li>Select a repository from "GitHub Repositories" to clone it, or choose an existing clone from "Existing Cloned Repositories".</li>
             <li>Use the "Commit Changes" and "Push Changes" buttons to manage your repository.</li>
+            <li>Click "Set Default Cloning Directory" to change where repositories are cloned by default.</li>
         </ol>
         <p>For more information, refer to the documentation.</p>
         """
@@ -365,8 +371,27 @@ class GitHubGitClient(QMainWindow):
 
         repo_url = f"https://{username}:{token}@github.com/{username}/{repo_name}.git"
 
-        # Set the local path with the default cloning directory
-        local_path = os.path.join(self.default_clone_dir, repo_name)
+        # Ask the user where to clone the repository
+        reply = QMessageBox.question(
+            self, 'Clone Directory',
+            "Do you want to clone the repository to the default directory?\n"
+            f"Default Directory: {self.default_clone_dir}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+        )
+
+        if reply == QMessageBox.No:
+            # Let the user choose a different directory
+            selected_dir = QFileDialog.getExistingDirectory(
+                self, "Select Cloning Directory", self.default_clone_dir
+            )
+            if selected_dir:
+                local_path = os.path.join(selected_dir, repo_name)
+            else:
+                self.display_message("Cloning operation canceled.")
+                return
+        else:
+            # Use the default cloning directory
+            local_path = os.path.join(self.default_clone_dir, repo_name)
 
         # Check if the directory already exists
         if os.path.exists(local_path):
@@ -381,12 +406,12 @@ class GitHubGitClient(QMainWindow):
                 return
             else:
                 # Ask for a different directory
-                alternative_path = QFileDialog.getExistingDirectory(
+                selected_dir = QFileDialog.getExistingDirectory(
                     self, "Select Alternative Directory for Cloning",
                     self.default_clone_dir
                 )
-                if alternative_path:
-                    local_path = os.path.join(alternative_path, repo_name)
+                if selected_dir:
+                    local_path = os.path.join(selected_dir, repo_name)
                     if os.path.exists(local_path):
                         QMessageBox.warning(self, "Warning", f"The directory '{local_path}' already exists.")
                         return
@@ -415,7 +440,9 @@ class GitHubGitClient(QMainWindow):
         self.progress_bar.setVisible(False)
         self.display_message(message)
         if success:
-            self.repo_path = os.path.join(self.default_clone_dir, self.repo_combo_box.currentText())
+            self.repo_path = os.path.join(
+                self.clone_thread.local_path
+            )
             self.display_message(f"Repository path set to: {self.repo_path}")
             # Refresh existing clones list
             self.load_existing_clones()
@@ -435,6 +462,59 @@ class GitHubGitClient(QMainWindow):
             self.display_message(f"Using existing repository at: {self.repo_path}")
         else:
             self.display_message(f"Selected repository path does not exist: {local_path}")
+
+    def set_cloning_directory(self):
+        """
+        Allow the user to set a new default cloning directory.
+        """
+        new_dir = QFileDialog.getExistingDirectory(
+            self, "Select Default Cloning Directory", self.default_clone_dir
+        )
+        if new_dir:
+            self.default_clone_dir = new_dir
+            self.display_message(f"Default cloning directory set to: {self.default_clone_dir}")
+            # Save the new default cloning directory to the configuration file
+            self.save_cloning_directory(new_dir)
+            # Refresh existing clones list
+            self.load_existing_clones()
+        else:
+            self.display_message("Cloning directory selection canceled.")
+
+    def save_cloning_directory(self, directory_path):
+        """
+        Save the default cloning directory to the configuration file.
+
+        Args:
+            directory_path (str): The path to save.
+        """
+        config = {}
+        config_file = os.path.expanduser("~/Documents/GitHubGitClient/config.json")
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r') as file:
+                    config = json.load(file)
+            except:
+                config = {}
+        config['default_clone_dir'] = directory_path
+        try:
+            with open(config_file, 'w') as file:
+                json.dump(config, file)
+            self.display_message("Default cloning directory saved successfully.")
+        except Exception as e:
+            self.display_message(f"Error saving cloning directory: {e}")
+
+    def load_cloning_directory(self):
+        """
+        Load the default cloning directory from the configuration file.
+        """
+        config_file = os.path.expanduser("~/Documents/GitHubGitClient/config.json")
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r') as file:
+                    config = json.load(file)
+                    self.default_clone_dir = config.get('default_clone_dir', self.default_clone_dir)
+            except:
+                self.display_message("Error loading cloning directory configuration.")
 
     def commit_changes(self):
         """
@@ -509,28 +589,6 @@ class GitHubGitClient(QMainWindow):
             message (str): Progress message.
         """
         self.display_message(message)
-
-    def view_repository_contents(self):
-        """
-        Display the contents of the repository in the text browser.
-        """
-        if not self.repo_path:
-            self.display_message("Please clone or select a repository first.")
-            return
-
-        try:
-            repo = Repo(self.repo_path)
-            contents = repo.git.ls_files().split('\n')  # List the files in the repository
-
-            if contents and contents != ['']:
-                content_text = "\n".join(contents)
-                self.repo_details_browser.setPlainText(content_text)
-            else:
-                self.repo_details_browser.setPlainText("No contents found in the repository.")
-        except GitCommandError as e:
-            self.display_message(f"Error fetching repository contents: {e}")
-        except Exception as e:
-            self.display_message(f"Unexpected error fetching repository contents: {e}")
 
 
 def main():
