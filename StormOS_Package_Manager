@@ -613,6 +613,7 @@ class ProgramInstaller(Gtk.Window):
         dialog.run()
         dialog.destroy()
 
+
 # Running the GTK application
 if __name__ == "__main__":
     win = ProgramInstaller()
