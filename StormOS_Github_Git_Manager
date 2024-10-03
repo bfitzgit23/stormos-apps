@@ -4,13 +4,12 @@ import os
 import sys
 import json
 import requests
-import shutil
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QLineEdit, QPushButton, QTextBrowser,
     QVBoxLayout, QWidget, QMessageBox, QComboBox, QHBoxLayout, QProgressBar,
     QAction, QFileDialog
 )
-from PyQt5.QtCore import QSize, Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from git import Repo, GitCommandError
 
 
@@ -70,7 +69,7 @@ class PushThread(QThread):
 
 class GitHubGitClient(QMainWindow):
     """
-    A simplified PyQt5-based GitHub Git Client that allows users to perform essential Git operations
+    A PyQt5-based GitHub Git Client that allows users to perform essential Git operations
     and interact with GitHub repositories through a graphical interface.
     """
 
@@ -92,6 +91,9 @@ class GitHubGitClient(QMainWindow):
 
         # Load GitHub token and Git credentials from configuration files
         self.load_git_credentials()
+
+        # Load cloning directory from config
+        self.load_cloning_directory()
 
     def initUI(self):
         """Set up the user interface."""
@@ -440,9 +442,7 @@ class GitHubGitClient(QMainWindow):
         self.progress_bar.setVisible(False)
         self.display_message(message)
         if success:
-            self.repo_path = os.path.join(
-                self.clone_thread.local_path
-            )
+            self.repo_path = self.clone_thread.local_path
             self.display_message(f"Repository path set to: {self.repo_path}")
             # Refresh existing clones list
             self.load_existing_clones()
@@ -456,12 +456,19 @@ class GitHubGitClient(QMainWindow):
             QMessageBox.warning(self, "Warning", "No existing cloned repositories to use.")
             return
 
-        local_path = os.path.join(self.default_clone_dir, repo_name)
-        if os.path.exists(local_path):
-            self.repo_path = local_path
-            self.display_message(f"Using existing repository at: {self.repo_path}")
-        else:
-            self.display_message(f"Selected repository path does not exist: {local_path}")
+        # Determine the path of the selected repository
+        # Since existing clones can be in different directories, we need to search for it
+        found = False
+        for root, dirs, files in os.walk(self.default_clone_dir):
+            if repo_name in dirs:
+                local_path = os.path.join(root, repo_name)
+                if os.path.isdir(os.path.join(local_path, '.git')):
+                    self.repo_path = local_path
+                    self.display_message(f"Using existing repository at: {self.repo_path}")
+                    found = True
+                    break
+        if not found:
+            self.display_message(f"Selected repository path does not exist in the default cloning directory.")
 
     def set_cloning_directory(self):
         """
