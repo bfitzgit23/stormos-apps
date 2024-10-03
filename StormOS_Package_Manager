@@ -7,10 +7,24 @@ from gi.repository import Gtk, Vte, GLib, Gio, Gdk
 import os
 import shutil
 import subprocess
+import threading
+import requests
+import logging
 
 class ProgramInstaller(Gtk.Window):
     def __init__(self):
         Gtk.Window.__init__(self, title="StormOS Package Manager")
+
+        # Set up logging
+        logging.basicConfig(
+            filename=os.path.join(os.path.expanduser("~"), "stormos_package_manager.log"),
+            level=logging.DEBUG,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        logging.info("Application started.")
+
+        # Initialize loaded_programs
+        self.loaded_programs = []
 
         # Dynamically get screen size using Gdk.Display and Gdk.Monitor
         display = Gdk.Display.get_default()
@@ -183,12 +197,32 @@ class ProgramInstaller(Gtk.Window):
         self.close_button.connect("clicked", self.on_close_button_clicked)
         grid.attach(self.close_button, 4, 8, 1, 1)
 
+        # Check if 'yay' is installed
+        if not self.is_yay_installed():
+            warning_dialog = Gtk.MessageDialog(
+                parent=self,
+                flags=0,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.OK,
+                text="`yay` is not installed.",
+            )
+            warning_dialog.format_secondary_text(
+                "Please install `yay` to manage AUR packages."
+            )
+            warning_dialog.run()
+            warning_dialog.destroy()
+            logging.warning("'yay' is not installed.")
+
     def on_terminal_spawned(self, terminal, pid, error, user_data):
         """Callback for terminal spawn completion."""
         if error:
-            print(f"Failed to spawn terminal: {error.message}")
+            error_message = f"Failed to spawn terminal: {error.message}"
+            print(error_message)
+            logging.error(error_message)
         else:
-            print(f"Terminal spawned successfully with PID: {pid}")
+            success_message = f"Terminal spawned successfully with PID: {pid}"
+            print(success_message)
+            logging.info(success_message)
             # Send a test command to verify the terminal is working
             test_command = "echo 'Terminal initialized successfully.'\n"
             self.terminal.feed_child(test_command.encode("utf-8"))
@@ -196,54 +230,86 @@ class ProgramInstaller(Gtk.Window):
     def on_key_press_event(self, widget, event):
         """Handle keyboard shortcuts for copy and paste."""
         keyname = Gdk.keyval_name(event.keyval)
-        state = event.state & Gtk.accelerator_get_default_mod_mask()
+        state = event.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK)
 
         # Ctrl + Shift + C for copy
-        if keyname == 'C' and state == Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK:
+        if keyname == 'C' and state == (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK):
             self.terminal.copy_clipboard()
+            logging.info("Copy shortcut used.")
+            return True
 
         # Ctrl + Shift + V for paste
-        elif keyname == 'V' and state == Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK:
+        elif keyname == 'V' and state == (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK):
             self.terminal.paste_clipboard()
+            logging.info("Paste shortcut used.")
+            return True
+
+        return False
 
     def on_button_press(self, widget, event):
         """Show context menu on right-click (mouse button 3)."""
         if event.button == 3:  # Right-click
-            self.context_menu.popup(None, None, None, None, event.button, event.time)
+            self.context_menu.popup_at_pointer(event)
             return True  # Prevent further event handling
         return False
 
     def on_copy_activate(self, widget):
         """Handle copy activation from the context menu."""
         self.terminal.copy_clipboard()
+        logging.info("Copy activated from context menu.")
 
     def on_paste_activate(self, widget):
         """Handle paste activation from the context menu."""
         self.terminal.paste_clipboard()
+        logging.info("Paste activated from context menu.")
 
     def create_default_programs_file(self, widget=None):
         """Create the default 'programs.txt' file on the user's Desktop."""
         # Get the user's home directory and construct the Desktop path
-        desktop_dir = os.path.join(os.environ['HOME'], 'Desktop')
+        desktop_dir = self.get_desktop_dir()
 
         # Ensure the Desktop directory exists
         if not os.path.exists(desktop_dir):
-            os.makedirs(desktop_dir)
+            try:
+                os.makedirs(desktop_dir)
+                logging.info(f"Created Desktop directory at {desktop_dir}.")
+            except Exception as e:
+                error_message = f"Failed to create Desktop directory: {str(e)}"
+                self.show_error_dialog(error_message)
+                logging.error(error_message)
+                return
 
         # Set the path for the programs.txt file on the Desktop
         programs_file = os.path.join(desktop_dir, "programs.txt")
 
         # Write the default content to the programs.txt file
-        with open(programs_file, "w") as file:
-            file.write("# Add one program per line\n")
-            file.write("# Lines starting with '#' are comments and will be ignored\n")
-            file.write("# Example programs are commented out on purpose to avoid installing or removing\n")
-            file.write("#firefox\n")
-            file.write("#vlc\n")
+        try:
+            with open(programs_file, "w") as file:
+                file.write("# Add one program per line\n")
+                file.write("# Lines starting with '#' are comments and will be ignored\n")
+                file.write("# Example programs are commented out on purpose to avoid installing or removing\n")
+                file.write("#firefox\n")
+                file.write("#vlc\n")
+            message = f"Created/overwritten 'programs.txt' on the Desktop at {programs_file}\n"
+            self.terminal.feed_child(f"echo '{message.strip()}'\n".encode("utf-8"))
+            logging.info(f"Created/overwritten 'programs.txt' at {programs_file}.")
+        except Exception as e:
+            error_message = f"Failed to write to programs.txt: {str(e)}"
+            self.show_error_dialog(error_message)
+            logging.error(error_message)
 
-        # Use echo to inform the user in the terminal
-        message = f"Created/overwritten 'programs.txt' on the Desktop at {programs_file}\n"
-        self.terminal.feed_child(f"echo '{message.strip()}'\n".encode("utf-8"))
+    def get_desktop_dir(self):
+        """Retrieve the user's Desktop directory using XDG."""
+        try:
+            from xdg.DesktopDirectory import get_desktop_dir
+            desktop_dir = get_desktop_dir()
+            logging.info(f"Desktop directory resolved to {desktop_dir}.")
+            return desktop_dir
+        except Exception:
+            # Fallback to ~/Desktop
+            desktop_dir = os.path.join(os.environ['HOME'], 'Desktop')
+            logging.warning(f"Using fallback Desktop directory at {desktop_dir}.")
+            return desktop_dir
 
     def load_additional_programs(self, programs_file=None):
         """Load additional programs from 'programs.txt' or a selected file."""
@@ -252,18 +318,26 @@ class ProgramInstaller(Gtk.Window):
             programs_file = os.path.join(script_dir, "programs.txt")
 
         if os.path.exists(programs_file):
-            with open(programs_file, "r") as file:
-                additional_programs = [line.strip() for line in file if line.strip() and not line.startswith("#")]
+            try:
+                with open(programs_file, "r") as file:
+                    additional_programs = [line.strip() for line in file if line.strip() and not line.startswith("#")]
                 if additional_programs:
-                    message = f"Loaded programs from {programs_file}: {', '.join(additional_programs)}"
-                    self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
                     self.loaded_programs = additional_programs  # Store the loaded programs
+                    message = f"Loaded programs from {programs_file}: {', '.join(self.loaded_programs)}"
+                    self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
+                    logging.info(message)
                 else:
                     message = f"The '{programs_file}' file is empty."
                     self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
+                    logging.info(message)
+            except Exception as e:
+                error_message = f"Failed to read programs.txt: {str(e)}"
+                self.terminal.feed_child(f"echo '{error_message}'\n".encode("utf-8"))
+                logging.error(error_message)
         else:
             message = f"The '{programs_file}' file was not found."
             self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
+            logging.warning(message)
 
     def on_file_button_clicked(self, widget):
         """Handle file selection dialog to choose a custom programs.txt file."""
@@ -287,6 +361,7 @@ class ProgramInstaller(Gtk.Window):
             selected_file = dialog.get_filename()
             message = f"Selected file: {selected_file}"
             self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
+            logging.info(message)
             self.load_additional_programs(programs_file=selected_file)
 
         dialog.destroy()
@@ -296,24 +371,28 @@ class ProgramInstaller(Gtk.Window):
         is_checked = widget.get_active()
         for checkbox in self.program_checkboxes.values():
             checkbox.set_active(is_checked)
+        logging.info(f"'Check All' toggled to {'selected' if is_checked else 'deselected'}.")
 
     def on_install_button_clicked(self, widget):
         """Install selected programs."""
-        self.run_selected_programs("install")
+        self.run_selected_programs_async("install")
 
     def on_uninstall_button_clicked(self, widget):
         """Uninstall selected programs."""
-        self.run_selected_programs("uninstall")
+        self.run_selected_programs_async("uninstall")
 
     def on_search_button_clicked(self, widget):
         """Search for multiple packages based on the selected search option."""
-
-        # Get the text entered in the entry field
         search_query = self.entry.get_text().strip()
 
         # Collect programs from programs.txt if selected
         if self.include_programs_file_checkbox.get_active():
-            search_query += ", " + ", ".join(self.loaded_programs)
+            if not self.loaded_programs:
+                message = "No programs loaded from programs.txt."
+                self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
+                logging.info(message)
+            else:
+                search_query += ", " + ", ".join(self.loaded_programs)
 
         # Split the search query by commas and strip any leading/trailing spaces
         queries = [query.strip() for query in search_query.split(",") if query.strip()]
@@ -332,18 +411,27 @@ class ProgramInstaller(Gtk.Window):
         else:
             message = "Please enter a search query."
             self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
+            logging.info(message)
 
     def search_programs_in_pacman(self, query):
         """Search for a package using pacman in the official repositories."""
         pacman_command = f"pacman -Ss {query}\n"
         self.terminal.feed_child(f"echo 'Searching for \"{query}\" in official repositories...'\n".encode("utf-8"))
         self.terminal.feed_child(pacman_command.encode("utf-8"))
+        logging.info(f"Executed search in Pacman for '{query}'.")
 
     def search_programs_in_aur(self, query):
         """Search for a package using yay in the AUR."""
+        if not self.is_yay_installed():
+            message = "`yay` is not installed. Please install it to search AUR packages."
+            self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
+            logging.warning(message)
+            return
+
         yay_command = f"yay -Ssa {query}\n"
         self.terminal.feed_child(f"echo 'Searching for \"{query}\" in AUR...'\n".encode("utf-8"))
         self.terminal.feed_child(yay_command.encode("utf-8"))
+        logging.info(f"Executed search in AUR for '{query}'.")
 
     def search_programs_in_pacman_and_yay(self, query):
         """Search for a package using pacman first, and then yay if not found in the official repos."""
@@ -357,62 +445,53 @@ class ProgramInstaller(Gtk.Window):
             try:
                 shutil.rmtree(cache_dir)  # Remove the cache directory
                 self.terminal.feed_child(f"echo 'Cleared cache for {program}'\n".encode("utf-8"))
+                logging.info(f"Cleared cache for '{program}'.")
             except Exception as e:
                 self.terminal.feed_child(f"echo 'Failed to clear cache for {program}: {str(e)}'\n".encode("utf-8"))
+                logging.error(f"Failed to clear cache for '{program}': {str(e)}")
 
     def is_package_installed(self, package_name):
         """Check if a package is installed using pacman."""
         try:
             result = subprocess.run(
                 ['pacman', '-Q', package_name],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                check=True
             )
-            return result.returncode == 0
-        except Exception as e:
+            logging.info(f"Package '{package_name}' is installed.")
+            return True
+        except subprocess.CalledProcessError:
+            logging.info(f"Package '{package_name}' is not installed.")
             return False
+        except Exception as e:
+            self.terminal.feed_child(f"echo 'Error checking package {package_name}: {str(e)}'\n".encode("utf-8"))
+            logging.error(f"Error checking package '{package_name}': {str(e)}")
+            return False
+
+    def run_selected_programs_async(self, action):
+        """Run the selected programs for either installation or uninstallation asynchronously."""
+        thread = threading.Thread(target=self.run_selected_programs, args=(action,))
+        thread.start()
+        logging.info(f"Started thread for '{action}' action.")
 
     def run_selected_programs(self, action):
         """Run the selected programs for either installation or uninstallation."""
-        selected_programs_to_run = []
+        GLib.idle_add(self.terminal.feed_child, f"echo '{action.capitalize()}ing selected programs...'\n".encode("utf-8"))
+        logging.info(f"Running '{action}' action for selected programs.")
 
-        # Check if programs from 'programs.txt' are included
-        if self.include_programs_file_checkbox.get_active() and self.loaded_programs:
-            selected_programs_to_run.extend(self.loaded_programs)
-
-        # Add selected built-in programs from the checkboxes
-        for program, checkbox in self.program_checkboxes.items():
-            if checkbox.get_active():
-                selected_programs_to_run.append(program)
-
-        # Add additional programs from the text field (split by commas)
-        additional_programs_from_gui = self.entry.get_text().strip()
-        if additional_programs_from_gui:
-            additional_programs = [prog.strip() for prog in additional_programs_from_gui.split(",") if prog.strip()]
-            selected_programs_to_run.extend(additional_programs)
-
-        # Remove duplicates
-        selected_programs_to_run = list(set(selected_programs_to_run))
+        selected_programs_to_run = self.collect_selected_programs()
 
         if selected_programs_to_run:
-            aur_packages_list = [
-                "rustdesk-bin", "discord", "google-chrome", "vdhcoapp", 
-                "signal-desktop", "warpinator", "sublime-text-4", 
-                "onlyoffice-bin", "xdman-beta-bin", "zoom"
-            ]
+            aur_packages = []
+            system_packages = []
 
-            # Separate AUR packages from system packages
-            aur_packages = [pkg for pkg in selected_programs_to_run if pkg in aur_packages_list]
-            system_packages = [pkg for pkg in selected_programs_to_run if pkg not in aur_packages_list]
+            for pkg in selected_programs_to_run:
+                if self.is_package_in_aur(pkg):
+                    aur_packages.append(pkg)
+                else:
+                    system_packages.append(pkg)
 
-            if aur_packages:
-                if action == "install":
-                    aur_command = f"yay -S {' '.join(aur_packages)} --noconfirm\n"
-                elif action == "uninstall":
-                    aur_command = f"yay -Rns {' '.join(aur_packages)} --noconfirm\n"
-
-                self.terminal.feed_child(f"echo '{action.capitalize()}ing AUR packages: {', '.join(aur_packages)}'\n".encode('utf-8'))
-                self.terminal.feed_child(aur_command.encode("utf-8"))
-
+            # Execute system packages first
             if system_packages:
                 packages_to_process = []
                 for pkg in system_packages:
@@ -420,7 +499,9 @@ class ProgramInstaller(Gtk.Window):
                         if self.is_package_installed(pkg):
                             packages_to_process.append(pkg)
                         else:
-                            self.terminal.feed_child(f"echo 'Package {pkg} is not installed, skipping...'\n".encode("utf-8"))
+                            message = f"Package {pkg} is not installed, skipping..."
+                            GLib.idle_add(self.terminal.feed_child, f"echo '{message}'\n".encode("utf-8"))
+                            logging.info(message)
                     else:
                         packages_to_process.append(pkg)
 
@@ -430,23 +511,107 @@ class ProgramInstaller(Gtk.Window):
                     elif action == "uninstall":
                         system_command = f"pkexec env DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY pacman -Rns {' '.join(packages_to_process)} --noconfirm\n"
 
-                    self.terminal.feed_child(f"echo '{action.capitalize()}ing system packages: {', '.join(packages_to_process)}'\n".encode('utf-8'))
-                    self.terminal.feed_child(system_command.encode("utf-8"))
+                    message = f"{action.capitalize()}ing system packages: {', '.join(packages_to_process)}"
+                    GLib.idle_add(self.terminal.feed_child, f"echo '{message}'\n".encode('utf-8'))
+                    logging.info(message)
+                    GLib.idle_add(self.terminal.feed_child, system_command.encode("utf-8"))
                 else:
-                    self.terminal.feed_child(f"echo 'No system packages found for {action}.'\n".encode("utf-8"))
+                    message = f"No system packages found for {action}."
+                    GLib.idle_add(self.terminal.feed_child, f"echo '{message}'\n".encode("utf-8"))
+                    logging.info(message)
+
+            # Then execute AUR packages
+            if aur_packages:
+                if action == "install":
+                    aur_command = f"yay -S {' '.join(aur_packages)} --noconfirm\n"
+                elif action == "uninstall":
+                    aur_command = f"yay -Rns {' '.join(aur_packages)} --noconfirm\n"
+
+                message = f"{action.capitalize()}ing AUR packages: {', '.join(aur_packages)}"
+                GLib.idle_add(self.terminal.feed_child, f"echo '{message}'\n".encode('utf-8'))
+                logging.info(message)
+                GLib.idle_add(self.terminal.feed_child, aur_command.encode("utf-8"))
+
         else:
-            self.terminal.feed_child("echo 'No programs selected for installation or uninstallation.'\n".encode("utf-8"))
+            message = "No programs selected for installation or uninstallation."
+            GLib.idle_add(self.terminal.feed_child, f"echo '{message}'\n".encode("utf-8"))
+            logging.info(message)
+
+    def is_yay_installed(self):
+        """Check if 'yay' is installed."""
+        return shutil.which("yay") is not None
+
+    def is_package_in_aur(self, package_name):
+        """Check if a package exists in the AUR."""
+        aur_api_url = f"https://aur.archlinux.org/rpc/?v=5&type=info&arg={package_name}"
+        try:
+            response = requests.get(aur_api_url, timeout=10)
+            data = response.json()
+            exists = data['resultcount'] > 0
+            logging.info(f"Package '{package_name}' exists in AUR: {exists}.")
+            return exists
+        except Exception as e:
+            error_message = f"Error checking AUR for package '{package_name}': {str(e)}"
+            self.terminal.feed_child(f"echo '{error_message}'\n".encode("utf-8"))
+            logging.error(error_message)
+            return False
+
+    def collect_selected_programs(self):
+        """Collect all selected programs from various sources."""
+        selected_programs = []
+
+        # Include programs from programs.txt if checkbox is active
+        if self.include_programs_file_checkbox.get_active() and self.loaded_programs:
+            selected_programs.extend(self.loaded_programs)
+
+        # Include selected built-in programs
+        selected_programs.extend([
+            program for program, checkbox in self.program_checkboxes.items() if checkbox.get_active()
+        ])
+
+        # Include additional programs from the entry
+        additional = self.entry.get_text().strip()
+        if additional:
+            selected_programs.extend([
+                prog.strip() for prog in additional.split(",") if prog.strip()
+            ])
+
+        # Remove duplicates
+        unique_programs = list(set(selected_programs))
+        logging.info(f"Collected programs for action: {unique_programs}")
+        return unique_programs
 
     def on_update_button_clicked(self, widget):
         """Update the system using yay with pkexec for graphical sudo prompt."""
-        update_command = "pkexec yay -Syyu --noconfirm\n"
-        print(f"Executing: {update_command}")  # Debugging
-        self.terminal.feed_child(f"echo 'Updating system...'\n".encode("utf-8"))
+        if not self.is_yay_installed():
+            message = "`yay` is not installed. Please install it to update the system."
+            self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
+            logging.warning(message)
+            return
+
+        update_command = "pkexec env DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY yay -Syyu --noconfirm\n"
+        message = "Updating system..."
+        self.terminal.feed_child(f"echo '{message}'\n".encode("utf-8"))
+        logging.info(message)
         self.terminal.feed_child(update_command.encode("utf-8"))
 
     def on_close_button_clicked(self, widget):
         """Close the application when the close button is clicked."""
+        logging.info("Application closed by user.")
         Gtk.main_quit()
+
+    def show_error_dialog(self, message):
+        """Display an error dialog with the given message."""
+        dialog = Gtk.MessageDialog(
+            parent=self,
+            flags=0,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text="Error",
+        )
+        dialog.format_secondary_text(message)
+        dialog.run()
+        dialog.destroy()
 
 # Running the GTK application
 if __name__ == "__main__":
