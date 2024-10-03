@@ -337,22 +337,48 @@ class GitHubGitClient(QMainWindow):
 
     def load_existing_clones(self):
         """
-        Scan the default cloning directory for existing cloned repositories and populate the combo box.
+        Load the list of existing cloned repositories from the configuration file.
         """
-        try:
-            existing_repos = []
-            for item in os.listdir(self.default_clone_dir):
-                item_path = os.path.join(self.default_clone_dir, item)
-                if os.path.isdir(item_path) and os.path.isdir(os.path.join(item_path, '.git')):
-                    existing_repos.append(item)
+        cloned_repos_file = os.path.expanduser("~/Documents/GitHubGitClient/cloned_repos.json")
+        if os.path.exists(cloned_repos_file):
+            try:
+                with open(cloned_repos_file, 'r') as file:
+                    cloned_repos = json.load(file)
+                self.existing_clones_combo_box.clear()
+                self.existing_clones_combo_box.addItems([os.path.basename(path) for path in cloned_repos])
+                if cloned_repos:
+                    self.display_message("Existing cloned repositories loaded.")
+                else:
+                    self.display_message("No existing cloned repositories found.")
+            except Exception as e:
+                self.display_message(f"Error loading existing cloned repositories: {e}")
+        else:
             self.existing_clones_combo_box.clear()
-            self.existing_clones_combo_box.addItems(existing_repos)
-            if existing_repos:
-                self.display_message("Existing cloned repositories detected.")
-            else:
-                self.display_message("No existing cloned repositories found.")
-        except Exception as e:
-            self.display_message(f"Error loading existing clones: {e}")
+            self.display_message("No existing cloned repositories found.")
+
+    def save_cloned_repo(self, repo_path):
+        """
+        Save the path of a cloned repository to the cloned_repos.json file.
+
+        Args:
+            repo_path (str): The full path of the cloned repository.
+        """
+        cloned_repos_file = os.path.expanduser("~/Documents/GitHubGitClient/cloned_repos.json")
+        cloned_repos = []
+        if os.path.exists(cloned_repos_file):
+            try:
+                with open(cloned_repos_file, 'r') as file:
+                    cloned_repos = json.load(file)
+            except:
+                cloned_repos = []
+        if repo_path not in cloned_repos:
+            cloned_repos.append(repo_path)
+            try:
+                with open(cloned_repos_file, 'w') as file:
+                    json.dump(cloned_repos, file)
+                self.display_message(f"Cloned repository saved: {repo_path}")
+            except Exception as e:
+                self.display_message(f"Error saving cloned repository: {e}")
 
     def initiate_clone_repository(self):
         """
@@ -444,6 +470,8 @@ class GitHubGitClient(QMainWindow):
         if success:
             self.repo_path = self.clone_thread.local_path
             self.display_message(f"Repository path set to: {self.repo_path}")
+            # Save the cloned repository path
+            self.save_cloned_repo(self.repo_path)
             # Refresh existing clones list
             self.load_existing_clones()
 
@@ -456,19 +484,28 @@ class GitHubGitClient(QMainWindow):
             QMessageBox.warning(self, "Warning", "No existing cloned repositories to use.")
             return
 
-        # Determine the path of the selected repository
-        # Since existing clones can be in different directories, we need to search for it
-        found = False
-        for root, dirs, files in os.walk(self.default_clone_dir):
-            if repo_name in dirs:
-                local_path = os.path.join(root, repo_name)
-                if os.path.isdir(os.path.join(local_path, '.git')):
-                    self.repo_path = local_path
+        # Load the list of cloned repositories
+        cloned_repos_file = os.path.expanduser("~/Documents/GitHubGitClient/cloned_repos.json")
+        if os.path.exists(cloned_repos_file):
+            try:
+                with open(cloned_repos_file, 'r') as file:
+                    cloned_repos = json.load(file)
+                # Find the selected repository's full path
+                selected_repo_path = None
+                for path in cloned_repos:
+                    if os.path.basename(path) == repo_name:
+                        if os.path.isdir(path):
+                            selected_repo_path = path
+                            break
+                if selected_repo_path:
+                    self.repo_path = selected_repo_path
                     self.display_message(f"Using existing repository at: {self.repo_path}")
-                    found = True
-                    break
-        if not found:
-            self.display_message(f"Selected repository path does not exist in the default cloning directory.")
+                else:
+                    self.display_message(f"Repository '{repo_name}' does not exist at the recorded path.")
+            except Exception as e:
+                self.display_message(f"Error loading cloned repositories: {e}")
+        else:
+            self.display_message("No cloned repositories recorded.")
 
     def set_cloning_directory(self):
         """
@@ -494,8 +531,10 @@ class GitHubGitClient(QMainWindow):
         Args:
             directory_path (str): The path to save.
         """
+        config_dir = os.path.expanduser("~/Documents/GitHubGitClient")
+        os.makedirs(config_dir, exist_ok=True)  # Ensure config directory exists
+        config_file = os.path.join(config_dir, "config.json")
         config = {}
-        config_file = os.path.expanduser("~/Documents/GitHubGitClient/config.json")
         if os.path.exists(config_file):
             try:
                 with open(config_file, 'r') as file:
@@ -520,6 +559,7 @@ class GitHubGitClient(QMainWindow):
                 with open(config_file, 'r') as file:
                     config = json.load(file)
                     self.default_clone_dir = config.get('default_clone_dir', self.default_clone_dir)
+                    self.display_message(f"Default cloning directory set to: {self.default_clone_dir}")
             except:
                 self.display_message("Error loading cloning directory configuration.")
 
@@ -596,6 +636,30 @@ class GitHubGitClient(QMainWindow):
             message (str): Progress message.
         """
         self.display_message(message)
+
+    def save_cloned_repo(self, repo_path):
+        """
+        Save the path of a cloned repository to the cloned_repos.json file.
+
+        Args:
+            repo_path (str): The full path of the cloned repository.
+        """
+        cloned_repos_file = os.path.expanduser("~/Documents/GitHubGitClient/cloned_repos.json")
+        cloned_repos = []
+        if os.path.exists(cloned_repos_file):
+            try:
+                with open(cloned_repos_file, 'r') as file:
+                    cloned_repos = json.load(file)
+            except:
+                cloned_repos = []
+        if repo_path not in cloned_repos:
+            cloned_repos.append(repo_path)
+            try:
+                with open(cloned_repos_file, 'w') as file:
+                    json.dump(cloned_repos, file)
+                self.display_message(f"Cloned repository saved: {repo_path}")
+            except Exception as e:
+                self.display_message(f"Error saving cloned repository: {e}")
 
 
 def main():
